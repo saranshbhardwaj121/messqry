@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

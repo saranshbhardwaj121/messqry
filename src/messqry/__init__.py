@@ -1,0 +1,1 @@
+"""MessQry AI application package."""
