@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_name: str = "MessQry AI"
     environment: str = "development"
     docs_enabled: bool = True
+    database_url: str = "sqlite:///./messqry.db"
 
     model_config = SettingsConfigDict(
         env_prefix="MESSQRY_",

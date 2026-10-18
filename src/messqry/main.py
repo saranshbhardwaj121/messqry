@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from messqry.api.routes import router
+from messqry.api.routes import models_router, router
 from messqry.config import get_settings
 
 settings = get_settings()
@@ -15,3 +15,4 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 app.include_router(router)
+app.include_router(models_router)
