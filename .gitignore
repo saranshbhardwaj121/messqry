@@ -6,6 +6,9 @@ __pycache__/
 venv/
 dist/
 build/
+node_modules/
+coverage/
+*.tsbuildinfo
 
 # Tool caches
 .pytest_cache/

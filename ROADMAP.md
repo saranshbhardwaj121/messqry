@@ -31,6 +31,8 @@ These decisions do not block the repository audit. They must be settled before t
 | Data retention and cost limits | Owner must approve request/metric retention, artifact retention, and alert budgets | Phase 5 |
 | Frontend stack and visual system | Working recommendation: React, TypeScript, and Vite with an accessible component system; confirm before frontend scaffold | Phase 1 |
 
+**UI direction approved:** dark charcoal MLOps workspace with neutral surfaces, consistent semantic action/success/warning/failure/information colors, sans-serif interface type, monospace technical details, responsive layout with shared column alignment, lifecycle visualization, stable forms/tables/actions, reduced-motion and touch support. Keep labels readable (11px minimum for compact support text; normal content is 12px or larger), state visually distinct from names, and deployment labels tied to explicit deployment configuration rather than the frontend build mode. Product navigation is Overview, Models, Deployments, Evaluations, Monitoring, and Settings. Essential information stays visible without hover; focus is visible; decoration does not intercept input; motion does not shift layout and pauses when offscreen. The references were described in the approved request; image files and code snippets were not present in the inspected workspace/attachment, so implementation follows the written direction.
+
 ## Candidate first-release architecture
 
 This is a working design to guide implementation, not an approved deployment specification:
@@ -60,8 +62,9 @@ Verification commands below are planned acceptance checks, not evidence that the
 - P0.3 Add regression/integration tests for the implemented registry, evaluation, deployment, readiness, and migration behavior.
 - P0.4 Make local setup reproducible with declared development dependencies and consistent lint/format configuration.
 - P0.5 Run checks against a clean disposable SQLite database and record actual results and remaining defects.
+- P0.6 Record UI direction, required screens/workflows, and existing frontend state.
 
-**Acceptance criteria:** unrelated and existing uncommitted work is preserved; all known review findings have regression coverage; migrations upgrade cleanly from base and metadata; tests and configured static checks pass; the setup steps work in a clean supported Python environment. Any outstanding failure is recorded rather than called complete.
+**Acceptance criteria:** unrelated and existing uncommitted work is preserved; all known review findings have regression coverage; migrations upgrade cleanly from base and metadata; tests and configured static checks pass; the setup steps work in a clean supported Python environment; approved UI direction and existing frontend state are recorded. Any outstanding failure is recorded rather than called complete.
 
 **Verification commands:**
 
@@ -86,17 +89,20 @@ Migration tests must create and use a temporary SQLite file, for example through
 - P1.1 Record the proposed first-release architecture, trust boundaries, and supported deployment model; identify unapproved choices.
 - P1.2 Record the first-release user/service authentication pattern and principal types; carry provider, claim mapping, and credential-lifecycle details into Phase 3 integration decisions.
 - P1.3 Harden configuration validation, secret handling, database connection lifecycle, and structured error responses.
-- P1.4 Define versioned API contracts, pagination/error conventions, and compatibility policy.
-- P1.5 Add lint/type/security checks and CI that run the verified local checks.
-- P1.6 Document schema migration, rollback, and environment-specific configuration procedures.
-- P1.7 Define frontend user flows, information architecture, navigation, visual direction, accessibility baseline, and responsive behavior; confirm the frontend stack.
-- P1.8 Scaffold the frontend application, API client/configuration, lint/test/build tooling, and local developer workflow.
+- P1.4 Define versioned API contracts, pagination/error conventions, and compatibility policy; publish the policy in `docs/API.md`.
+- P1.5 Add backend/frontend lint, test, build, and dependency-security checks to CI; verify the workflow and checks locally where available.
+- P1.6 Document schema migration, rollback, and environment-specific configuration procedures in the developer guide.
+- P1.7 (frontend) Define user flows, information architecture, navigation, visual direction, accessibility baseline, responsive behavior, and frontend stack.
+- P1.8 (frontend) Scaffold the React/TypeScript/Vite application, Tailwind tokens, API client/configuration, lint/test/build tooling, and local developer workflow.
+- P1.9 (frontend) Build the responsive application shell, navigation, and reusable accessible primitives.
+- P1.10 (frontend) Connect the shell to documented API data and implement shared loading, empty, error, success, and unavailable states.
+- P1.11 (frontend) Deliver the Overview screen with model/deployment summaries, recent available activity, lifecycle visualization, and honest unavailable telemetry states.
 
-**Acceptance criteria:** the architecture and authentication pattern/principal types are recorded; provider and detailed authorization choices are explicit and settled before serving integration; frontend navigation and workflows are approved; the frontend starts locally and builds against the documented API configuration; startup rejects invalid production configuration; secrets are not committed or logged; API errors are stable and non-sensitive; CI runs required checks on proposed changes; migration procedures are rehearsable without losing data.
+**Acceptance criteria:** the architecture and authentication pattern/principal types are recorded; provider and detailed authorization choices are explicit and settled before serving integration; frontend navigation and workflows are approved; the responsive shell and Overview work with API-backed data and honest empty/unavailable states; keyboard focus and reduced-motion behavior are supported; desktop and mobile browser previews are visually reviewed; the frontend starts locally and builds against documented API configuration; startup rejects invalid production configuration; secrets are not committed or logged; API errors are stable and non-sensitive; CI runs required checks on proposed changes; migration procedures are rehearsable without losing data.
 
 **Verification commands:** `python -m pytest`; `ruff check .`; `ruff format --check .`; configured type/security tools; CI run on a branch; disposable-database migration upgrade/downgrade/upgrade.
 
-For P1.8 and later frontend tasks, establish these scripts in the scaffold and run them at the repository root: `npm --prefix frontend run lint`, `npm --prefix frontend test`, and `npm --prefix frontend run build`.
+For frontend tasks, establish these scripts in the scaffold and run them at the repository root: `npm --prefix frontend run lint`, `npm --prefix frontend test`, and `npm --prefix frontend run build`. Provide a local rendered preview for review; never imply fixture/demo values are live service data.
 
 ### Phase 2 — Model registry and artifact management
 
@@ -106,12 +112,12 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P2.1 Finalize model/version metadata and immutability rules for the supported package format.
-- P2.2 Implement private artifact upload/download through the approved storage abstraction and S3 backend.
-- P2.3 Validate package manifests, checksums, size limits, and permitted artifact locations without executing uploaded code in the control API.
-- P2.4 Apply ownership/authorization checks to model and version operations.
-- P2.5 Add lifecycle, access-control, corruption, and migration regression tests.
-- P2.6 Build registry screens for model list/search, registration, detail, version history, artifact status, and empty/loading/error states.
+- P2.1 (backend) Finalize model/version metadata and immutability rules for the supported package format.
+- P2.2 (backend) Implement private artifact upload/download through the approved storage abstraction and S3 backend.
+- P2.3 (backend) Validate package manifests, checksums, size limits, and permitted artifact locations without executing uploaded code in the control API.
+- P2.4 (backend) Apply ownership/authorization checks to model and version operations.
+- P2.5 (backend) Add lifecycle, access-control, corruption, and migration regression tests.
+- P2.6 (frontend) Build registry screens for model list/search, registration forms, artifact upload/status workflows, version details/history, and empty/loading/error/success states.
 
 **Acceptance criteria:** registered versions are immutable and traceable to checksummed artifacts; artifact access is private and authorized; invalid or oversized packages are rejected; credentials and user data do not appear in logs; supported lifecycle paths are covered by passing tests; users can complete registration and inspect model/version details in the web console with accessible validation and feedback states.
 
@@ -125,15 +131,16 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P3.1 Implement the approved serving adapter and prediction API contract for the supported model format.
-- P3.2 Run model workloads outside the control API process with network, CPU, memory, filesystem, and timeout limits.
-- P3.3 Implement authenticated deployment controls and authorization by model/environment.
-- P3.4 Complete deployment state transitions, optimistic concurrency, idempotency, and immutable audit history.
-- P3.5 Implement health checks, graceful shutdown, and rollback behavior for failed runtime starts.
-- P3.6 Add integration, concurrency, abuse, and failure-injection tests.
-- P3.7 Build deployment screens showing environment state, selected version, promotion/rollback actions, confirmation, and audit history.
+- P3.1 (backend) Implement the approved serving adapter and prediction API contract for the supported model format.
+- P3.2 (backend) Run model workloads outside the control API process with network, CPU, memory, filesystem, and timeout limits.
+- P3.3 (backend) Implement authenticated deployment controls and authorization by model/environment.
+- P3.4 (backend) Complete deployment state transitions, optimistic concurrency, idempotency, and immutable audit history.
+- P3.5 (backend) Implement health checks, graceful shutdown, and rollback behavior for failed runtime starts.
+- P3.6 (backend) Add integration, concurrency, abuse, and failure-injection tests.
+- P3.7 (frontend) Build deployment screens showing environment state, selected version, promotion/rollback actions, confirmation, and audit history.
+- P3.8 (frontend) Build sign-in, session-expiry, access-denied, and scoped service-credential guidance states for the approved OIDC-compatible identity and service-credential approach.
 
-**Acceptance criteria:** only supported artifacts can be served; a caller cannot access another unauthorized model; prediction requests are bounded and return documented errors; concurrent promotions cannot produce inconsistent current state or history; failed starts leave a recoverable state; rollback restores the selected prior version and produces an audit event; users can inspect deployment state and complete authorized promotion/rollback flows from the UI with clear confirmations and resulting history.
+**Acceptance criteria:** only supported artifacts can be served; a caller cannot access another unauthorized model; prediction requests are bounded and return documented errors; concurrent promotions cannot produce inconsistent current state or history; failed starts leave a recoverable state; rollback restores the selected prior version and produces an audit event; users can inspect deployment state and complete authorized promotion/rollback flows from the UI with clear confirmations and resulting history; sign-in, expired-session, and access-denied states use the selected identity provider without exposing credentials.
 
 **Verification commands:** `python -m pytest`; `npm --prefix frontend test`; configured lint/type/security checks; SQLite and PostgreSQL concurrency tests; container security checks; API contract tests; browser tests for deployment state/promotion/rollback/history; failure-injection tests for start/stop and dependency loss.
 
@@ -145,11 +152,11 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P4.1 Define evaluation datasets, dataset versions, evaluator versions, metric semantics, and provenance.
-- P4.2 Store evaluation runs and threshold policies as durable versioned records.
-- P4.3 Enforce passing, current evaluation policies on production promotion; define override authorization and audit.
-- P4.4 Add negative, boundary, reproducibility, and bypass-resistance tests.
-- P4.5 Build evaluation screens for submitting approved evaluation inputs, reviewing metric/threshold results, and understanding promotion eligibility.
+- P4.1 (backend) Define evaluation datasets, dataset versions, evaluator versions, metric semantics, and provenance.
+- P4.2 (backend) Store evaluation runs and threshold policies as durable versioned records.
+- P4.3 (backend) Enforce passing, current evaluation policies on production promotion; define override authorization and audit.
+- P4.4 (backend) Add negative, boundary, reproducibility, and bypass-resistance tests.
+- P4.5 (frontend) Build evaluation screens for approved inputs, version comparisons, metric/threshold results, provenance, and promotion eligibility.
 
 **Acceptance criteria:** an evaluation can be reproduced from recorded inputs; metric direction and threshold semantics are explicit; failed, missing, stale, or incompatible evaluations cannot be promoted to production except through an authorized, audited override; all policy paths are tested; the UI presents evaluation provenance, threshold outcomes, and promotion eligibility clearly.
 
@@ -163,14 +170,14 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P5.1 Add structured, correlated logs with sensitive-field redaction.
-- P5.2 Record request volume, error rates, latency distributions, runtime health, and resource/cost estimates.
-- P5.3 Define input/data-quality and drift signals appropriate to the supported model contract.
-- P5.4 Add configurable alert conditions, delivery behavior, retention controls, and cost limits.
-- P5.5 Add dashboards/runbooks and tests for metric correctness, redaction, alert firing, and retention.
-- P5.6 Build operator dashboards for service/model health, latency, errors, drift, cost, and alert state, including empty and stale-data states.
+- P5.1 (backend) Add structured, correlated logs with sensitive-field redaction.
+- P5.2 (backend) Record request volume, error rates, latency distributions, runtime health, and resource/cost estimates.
+- P5.3 (backend) Define input/data-quality and drift signals appropriate to the supported model contract.
+- P5.4 (backend) Add configurable alert conditions, delivery behavior, retention controls, and cost limits.
+- P5.5 (backend) Add dashboards/runbooks and tests for metric correctness, redaction, alert firing, and retention.
+- P5.6 (frontend) Build operator dashboards for service/model health, latency, errors, drift, cost, and alert state, including empty and stale-data states. Every chart must state its source, units, time range, and labels, support pointer inspection and a keyboard alternative, and avoid presenting unavailable data as zero.
 
-**Acceptance criteria:** operators can identify a failing deployment and compare its quality/latency/error/cost signals; alerts fire on agreed thresholds; logs do not leak credentials or sensitive payloads; retention is enforced and documented; monitoring failure does not silently break prediction traffic; dashboard values, time ranges, units, and stale-data conditions are accurate and understandable.
+**Acceptance criteria:** operators can identify a failing deployment and compare its quality/latency/error/cost signals; alerts fire on agreed thresholds; logs do not leak credentials or sensitive payloads; retention is enforced and documented; monitoring failure does not silently break prediction traffic; dashboard values, time ranges, units, and stale-data conditions are accurate and understandable; charts support pointer inspection and keyboard-accessible value inspection, with source/units/range always visible.
 
 **Verification commands:** `python -m pytest`; `npm --prefix frontend test`; telemetry contract tests; redaction tests; alert simulations; retention tests; dashboard tests for values, units, time ranges, and stale data; load tests with recorded latency/error/resource evidence.
 
@@ -182,12 +189,12 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P6.1 Add infrastructure as code for networking, compute, database, artifact storage, encryption, and least-privilege IAM.
-- P6.2 Build and scan pinned application/runtime container images.
-- P6.3 Integrate managed secrets, key rotation, backups, and recovery controls.
-- P6.4 Add CI/CD with migration ordering, staged rollout, health gates, and rollback artifacts.
-- P6.5 Document and locally validate deployment/rollback workflows for staging and production.
-- P6.6 Package and deliver the frontend through the approved secure hosting path with separate staging/production configuration, cache rules, and browser security headers.
+- P6.1 (infrastructure) Add infrastructure as code for networking, compute, database, artifact storage, encryption, and least-privilege IAM.
+- P6.2 (delivery) Build and scan pinned application/runtime container images.
+- P6.3 (infrastructure) Integrate managed secrets, key rotation, backups, and recovery controls.
+- P6.4 (delivery) Add CI/CD with migration ordering, staged rollout, health gates, and rollback artifacts.
+- P6.5 (operations) Document and locally validate deployment/rollback workflows for staging and production.
+- P6.6 (frontend) Package and deliver the frontend through the approved secure hosting path with separate staging/production configuration, cache rules, and browser security headers.
 
 **Acceptance criteria:** infrastructure changes are reviewable and reproducible; staging and production are isolated; credentials are managed outside source control; CI deploy gates require verified build/test/security checks; frontend bundles contain no secrets and use the correct environment API endpoint; the rollback procedure and backup recovery are demonstrated in a non-production environment. Cloud provisioning/deployment is a separate user-authorized action.
 
@@ -201,12 +208,12 @@ For P1.8 and later frontend tasks, establish these scripts in the scaffold and r
 
 **Required tasks**
 
-- P7.1 Complete security and privacy review, threat model, dependency scan, and authorization audit.
-- P7.2 Verify load, concurrency, latency, resource limits, and graceful degradation against agreed targets.
-- P7.3 Exercise backup restoration, migration recovery, failed deployment recovery, and incident procedures.
-- P7.4 Complete operator/user documentation, known limitations, support ownership, and incident runbooks.
-- P7.5 Review release criteria, unresolved risks, rollback plan, and approval evidence.
-- P7.6 Complete browser end-to-end journeys, keyboard/screen-reader/accessibility review, responsive checks, and UI performance acceptance.
+- P7.1 (security) Complete security and privacy review, threat model, dependency scan, and authorization audit.
+- P7.2 (operations) Verify load, concurrency, latency, resource limits, and graceful degradation against agreed targets.
+- P7.3 (operations) Exercise backup restoration, migration recovery, failed deployment recovery, and incident procedures.
+- P7.4 (operations) Complete operator/user documentation, known limitations, support ownership, and incident runbooks.
+- P7.5 (release) Review release criteria, unresolved risks, rollback plan, and approval evidence.
+- P7.6 (frontend) Complete browser end-to-end journeys, keyboard/screen-reader/accessibility review, responsive checks, and UI performance acceptance.
 
 **Acceptance criteria:** agreed security/performance/recovery objectives have measured evidence; registry, evaluation, deployment, rollback, and operations journeys pass browser end-to-end checks; keyboard, screen-reader, responsive, and UI performance criteria are met; no unresolved release-blocking issue remains; restore and rollback drills succeed; runbooks have an owner; release approval is explicit. Passing local checks alone does not establish production readiness.
 
