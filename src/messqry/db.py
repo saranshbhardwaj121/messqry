@@ -13,13 +13,19 @@ class Base(DeclarativeBase):
 
 
 def _build_engine():
-    database_url = get_settings().database_url
+    database_url = get_settings().database_url.get_secret_value()
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     return create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
 
 
 engine = _build_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+def dispose_engine() -> None:
+    """Close pooled database connections during application shutdown."""
+
+    engine.dispose()
 
 
 def get_session() -> Generator[Session, None, None]:

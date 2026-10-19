@@ -4,11 +4,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.responses import JSONResponse
 
-from messqry.api.schemas import ModelCreate, ModelDetail, ModelRead, ModelVersionCreate, ModelVersionRead
+from messqry.api.schemas import (
+    ModelCreate,
+    ModelDetail,
+    ModelRead,
+    ModelVersionCreate,
+    ModelVersionRead,
+)
 from messqry.db import get_session
 from messqry.models import ModelVersion, RegisteredModel
 
@@ -21,11 +28,40 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class ReadinessResponse(BaseModel):
+    """Readiness response including required service dependencies."""
+
+    status: str
+    database: str
+
+
 @router.get("/health", response_model=HealthResponse, tags=["operations"])
 def health_check() -> HealthResponse:
     """Report that the API process is accepting requests."""
 
     return HealthResponse(status="ok")
+
+
+@router.get(
+    "/ready",
+    response_model=ReadinessResponse,
+    responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ReadinessResponse}},
+    tags=["operations"],
+)
+def readiness_check(
+    session: Session = Depends(get_session),
+) -> ReadinessResponse | JSONResponse:
+    """Check whether the API can reach its configured database."""
+
+    try:
+        session.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        session.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=ReadinessResponse(status="not_ready", database="unavailable").model_dump(),
+        )
+    return ReadinessResponse(status="ready", database="ok")
 
 
 models_router = APIRouter(prefix="/api/v1/models", tags=["models"])
@@ -41,7 +77,9 @@ def create_model(payload: ModelCreate, session: Session = Depends(get_session)) 
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A model with this name already exists") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="A model with this name already exists"
+        ) from exc
     session.refresh(model)
     return model
 
@@ -50,7 +88,9 @@ def create_model(payload: ModelCreate, session: Session = Depends(get_session)) 
 def list_models(session: Session = Depends(get_session)) -> list[RegisteredModel]:
     """List registered models, newest first."""
 
-    return list(session.scalars(select(RegisteredModel).order_by(RegisteredModel.created_at.desc())))
+    return list(
+        session.scalars(select(RegisteredModel).order_by(RegisteredModel.created_at.desc()))
+    )
 
 
 @models_router.get("/{model_id}", response_model=ModelDetail)
@@ -102,7 +142,9 @@ def register_model_version(
 
 
 @models_router.get("/{model_id}/versions", response_model=list[ModelVersionRead])
-def list_model_versions(model_id: UUID, session: Session = Depends(get_session)) -> list[ModelVersion]:
+def list_model_versions(
+    model_id: UUID, session: Session = Depends(get_session)
+) -> list[ModelVersion]:
     """List all registered versions of one model."""
 
     if session.get(RegisteredModel, model_id) is None:
