@@ -24,7 +24,7 @@ The first release targets **one organization in an isolated AWS deployment**, wi
 
 We can demonstrate a local web console, model registration and search, validated model-package upload, version inspection, private-storage interfaces, registry token checks, database-backed deployment selections/history, and recorded metric comparisons.
 
-We cannot yet demonstrate a complete production prediction service. An optional ECS Fargate task launcher is configured and mock-tested, but it is disabled by default and has not launched a real task. The planned prediction endpoint, model health check, benchmark evaluations, and inference telemetry are not implemented. Browser sign-in and cloud provisioning are also pending; automated retraining remains a later-phase goal.
+We cannot yet demonstrate a complete production prediction service. The scoped prediction endpoint now resolves the selected validated version and uses a bounded HTTP adapter plus a mock-tested ECS warm-task cache, health check, and idle timer. The runtime image, package loading, actual task launch, VPC/IAM controls, benchmark evaluations, and inference telemetry are not implemented or cloud-verified. Browser sign-in and cloud provisioning are also pending; automated retraining remains a later-phase goal.
 
 ## 2. The problem and why it matters
 
@@ -113,7 +113,7 @@ The API does not currently calculate that accuracy, run a benchmark dataset, or 
 
 ### Step D — choose an environment and deploy
 
-Today deployment means storing which registered version an environment selects and writing a history event. No model process starts.
+Deployment controls store which registered version an environment selects and write a history event. On prediction, the API starts or reuses a private runtime task for that deployment revision and checks health before forwarding input. No model server image is included yet, so actual inference is not available.
 
 The selected runtime direction is one isolated **ECS Fargate task per model/environment deployment**. The future deployment adapter must start the right workload, wait for health, discover its private address, and only then route requests to it. Failed startup and replacement behavior still need implementation.
 
@@ -343,7 +343,7 @@ The intended result identifies the version that answered:
 }
 ```
 
-There should be one prediction per input record. Incorrect output shape, unavailable tasks, and timeouts need defined failures. The schemas and boundary document exist, and a mock-tested ECS adapter can launch a configured task and resolve its private IP. The prediction route, model server image, health check, idle-task registry/timer, and runtime output validation do not yet exist.
+There must be one prediction per input record. The API route requires `messqry/prediction.invoke`, caps request and runtime response bodies at 1 MiB, applies a 30-second runtime timeout, and checks the response's model/environment/version and output count. Its private task cache is keyed by deployment revision and stops idle tasks after five minutes. These controls have mocked local tests; the runtime image, actual AWS networking/task behavior, and live model inference remain unverified.
 
 ## 11. Monitoring, evaluation, and retraining
 
@@ -435,7 +435,7 @@ For example, ECR could store container images, an ALB could route HTTPS traffic,
 | 0 — Audit and stabilization | Baseline, fixes, reproducible setup, initial regression coverage | Record UI direction | Complete in tracker. |
 | 1 — Architecture/foundations | Configuration, lifecycle, API conventions, CI and design foundation | Responsive shell and Overview | Complete in tracker. |
 | 2 — Registry/artifacts | Version metadata, validation, storage adapters, scoped registry access | Model registration/upload/version inspection | Tasks marked implemented and locally verified; cloud integration remains unverified. |
-| 3 — Secure serving/deployments | Isolated runtimes, prediction, deployment permissions and recovery | Deployment controls and sign-in/session states | In progress; prediction schemas and mock-tested ECS task launcher exist; health checks, live task execution, and prediction route remain pending. |
+| 3 — Secure serving/deployments | Isolated runtimes, prediction, deployment permissions and recovery | Deployment controls and sign-in/session states | In progress; scoped prediction route, bounded transport, health check, and process-local warm-task lifecycle are implemented with mock tests; runtime image and AWS execution remain pending. |
 | 4 — Evaluation policies | Reproducible evaluation and enforced promotion eligibility | Results, comparisons, provenance and eligibility | Planned. |
 | 5 — Observability | Logs, performance, drift, alerts, retention and cost controls | Operational monitoring views | Planned. |
 | 6 — AWS/delivery | Infrastructure, images, secrets, backups and deployment pipeline | Production frontend delivery | Planned. |
@@ -469,7 +469,7 @@ No. We selected MLflow `pyfunc` as the supported package and prediction interfac
 
 ### “What exactly is deployed today?”
 
-The API can record an environment's selected version and its history. An optional, disabled-by-default manager can start a configured Fargate task and resolve its private address, but the API does not yet health-check a model server or route prediction traffic. The next serving work connects runtime health and prediction handling to this boundary.
+The API records an environment's selected version and history. The optional, disabled-by-default manager can start a configured Fargate task, verify its model-version health response, forward predictions to its private address, reuse the task while warm, and stop it after idle time. These paths have local mocked coverage, but no runtime image or AWS environment is configured, so they do not yet provide usable live inference.
 
 ### “Why a Fargate task for each deployment?”
 

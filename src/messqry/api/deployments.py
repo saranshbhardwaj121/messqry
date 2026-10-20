@@ -7,13 +7,19 @@ from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
-from messqry.api.schemas import DeploymentChange, DeploymentEventRead, DeploymentRead
+from messqry.api.schemas import (
+    DeploymentChange,
+    DeploymentEventRead,
+    DeploymentRead,
+    PredictionRequest,
+    PredictionResponse,
+)
 from messqry.api.security import Principal, require_scope
 from messqry.db import get_session
 from messqry.models import (
@@ -23,6 +29,8 @@ from messqry.models import (
     ModelVersion,
     RegisteredModel,
 )
+from messqry.runtime.ecs import RuntimeLaunchError
+from messqry.runtime.transport import RuntimeTransportError, encode_prediction_payload
 
 router = APIRouter(prefix="/api/v1/models/{model_id}/deployments", tags=["deployments"])
 ENVIRONMENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -34,6 +42,89 @@ def _validate_environment(environment: str) -> None:
             status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
             detail="Environment must be a lowercase slug of up to 32 characters",
         )
+
+
+@router.post("/{environment}/predict", response_model=PredictionResponse)
+def predict(
+    model_id: UUID,
+    environment: str,
+    payload: PredictionRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/prediction.invoke")),
+) -> PredictionResponse:
+    """Run bounded inference against the currently selected validated version."""
+
+    del principal
+    _validate_environment(environment)
+    deployment = session.scalar(
+        select(Deployment)
+        .options(selectinload(Deployment.model_version))
+        .where(Deployment.model_id == model_id, Deployment.environment == environment)
+    )
+    if deployment is None:
+        if session.get(RegisteredModel, model_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active deployment for this environment",
+        )
+
+    version = deployment.model_version
+    if (
+        version.validation_status != "validated"
+        or version.package_format != "mlflow_pyfunc"
+        or not version.artifact_sha256
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The active model version is not a validated serving package",
+        )
+    request_payload = payload.model_dump(mode="json")
+    try:
+        encode_prediction_payload(request_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Prediction request exceeds the maximum runtime payload size",
+        ) from exc
+    runtime = getattr(request.app.state, "runtime_manager", None)
+    if runtime is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model runtime is unavailable",
+        )
+    # Keep the database transaction limited to resolving the deployment. Startup
+    # and inference may take up to 90 seconds, so carry only immutable metadata
+    # across the remote call and return the pooled connection first.
+    runtime_params = {
+        "deployment_id": str(deployment.id),
+        "deployment_revision": deployment.revision,
+        "environment": environment,
+        "model_id": str(model_id),
+        "model_version_id": str(version.id),
+        "model_version": version.version,
+        "artifact_uri": version.artifact_uri,
+        "artifact_sha256": version.artifact_sha256,
+        "payload": request_payload,
+    }
+    session.rollback()
+    try:
+        return runtime.predict(**runtime_params)
+    except RuntimeLaunchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model runtime could not be started",
+        ) from exc
+    except RuntimeTransportError as exc:
+        error_status = (
+            status.HTTP_504_GATEWAY_TIMEOUT
+            if exc.timed_out
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+            if "unavailable" in str(exc)
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(status_code=error_status, detail=str(exc)) from exc
 
 
 def _get_target_version(session: Session, model_id: UUID, version_number: int) -> ModelVersion:

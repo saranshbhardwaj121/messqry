@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     ecs_security_group_ids: str = ""
     runtime_port: int = Field(default=8000, ge=1, le=65535)
     runtime_startup_timeout_seconds: int = Field(default=60, ge=1, le=60)
+    runtime_idle_timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
     model_config = SettingsConfigDict(
         env_prefix="MESSQRY_",

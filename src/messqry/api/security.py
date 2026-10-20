@@ -18,6 +18,7 @@ _KNOWN_SCOPES = frozenset(
         "messqry/registry.write",
         "messqry/deployment.read",
         "messqry/deployment.write",
+        "messqry/prediction.invoke",
     }
 )
 _DEVELOPMENT_SCOPES = _KNOWN_SCOPES

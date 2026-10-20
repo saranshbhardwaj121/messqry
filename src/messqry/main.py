@@ -38,10 +38,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.runtime_manager = runtime_manager
         yield
     finally:
-        runtime_client = getattr(runtime_manager, "client", None)
-        close_runtime_client = getattr(runtime_client, "close", None)
-        if close_runtime_client is not None:
-            close_runtime_client()
+        close_runtime_manager = getattr(runtime_manager, "close", None)
+        if close_runtime_manager is not None:
+            close_runtime_manager()
         close = getattr(getattr(artifact_store, "client", None), "close", None)
         if close is not None:
             close()

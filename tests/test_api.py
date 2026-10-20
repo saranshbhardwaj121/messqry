@@ -9,9 +9,17 @@ import pytest
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from starlette.requests import Request
 
 from messqry.api import deployments, evaluations, routes
-from messqry.api.schemas import DeploymentChange, EvaluationCreate, ModelCreate, ModelVersionCreate
+from messqry.api.schemas import (
+    DeploymentChange,
+    EvaluationCreate,
+    ModelCreate,
+    ModelVersionCreate,
+    PredictionRequest,
+    PredictionResponse,
+)
 from messqry.api.security import Principal, ScopeRequirement
 from messqry.artifact_storage import LocalArtifactStore
 from messqry.main import app
@@ -83,6 +91,8 @@ def test_health_readiness_and_openapi_contract(session_factory):
         parameter["name"] == "Idempotency-Key" and parameter["in"] == "header"
         for parameter in deployment_security["put"]["parameters"]
     )
+    prediction_path = "/api/v1/models/{model_id}/deployments/{environment}/predict"
+    assert app.openapi()["paths"][prediction_path]["post"]["security"] == [{"HTTPBearer": []}]
 
     def required_scopes(path, method):
         route = next(
@@ -101,6 +111,58 @@ def test_health_readiness_and_openapi_contract(session_factory):
     assert required_scopes(deployment_path, "PUT") == {"messqry/deployment.write"}
     assert required_scopes(f"{deployment_path}/rollback", "POST") == {"messqry/deployment.write"}
     assert required_scopes(f"{deployment_path}/history", "GET") == {"messqry/deployment.read"}
+    assert required_scopes(f"{deployment_path}/predict", "POST") == {"messqry/prediction.invoke"}
+
+
+def test_prediction_route_uses_active_validated_version_and_runtime(session_factory):
+    with session_factory() as session:
+        model = routes.create_model(ModelCreate(name="servable-model"), session)
+        model_id = model.id
+        version = ModelVersion(
+            model_id=model_id,
+            version=1,
+            artifact_uri="s3://private-bucket/model.zip",
+            package_format="mlflow_pyfunc",
+            artifact_sha256="a" * 64,
+            validation_status="validated",
+        )
+        session.add(version)
+        session.commit()
+        version_number = version.version
+        deployments.deploy_version(
+            model_id, "production", DeploymentChange(version=version_number), session
+        )
+
+        class FakeRuntime:
+            def predict(self, **kwargs):
+                assert not session.in_transaction()
+                self.request = kwargs
+                return PredictionResponse(
+                    model_id=model_id,
+                    environment="production",
+                    model_version=version_number,
+                    predictions=[0.91],
+                )
+
+        runtime = FakeRuntime()
+        app.state.runtime_manager = runtime
+        request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
+        response = deployments.predict(
+            model_id,
+            "production",
+            PredictionRequest(inputs=[{"feature": 1}]),
+            request,
+            session,
+            Principal("test-user", "user", frozenset({"messqry/prediction.invoke"})),
+        )
+        assert not session.in_transaction()
+
+    assert response.model_version == version_number
+    assert response.predictions == [0.91]
+    assert runtime.request["model_id"] == str(model_id)
+    assert runtime.request["model_version"] == version_number
+    assert runtime.request["payload"] == {"inputs": [{"feature": 1}]}
+    del app.state.runtime_manager
 
 
 def test_model_registry_validates_and_versions_models(session_factory):

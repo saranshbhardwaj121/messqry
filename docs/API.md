@@ -44,9 +44,16 @@ repository [README](../README.md#current-api). The OpenAPI document at
 `/openapi.json` is the machine-readable contract when API docs are enabled.
 
 Current v1 list responses are unpaginated. Registry routes require registry
-scopes, and deployment list/history/change routes require deployment read/write
-scopes. The API still lacks the prediction endpoint, browser sign-in, and
-evaluation authorization, so it is not a production contract yet.
+scopes, deployment list/history/change routes require deployment read/write
+scopes, and prediction requires `messqry/prediction.invoke`. The prediction
+route is `POST /api/v1/models/{model_id}/deployments/{environment}/predict`.
+It accepts 1–1,000 homogeneous JSON records within a 1 MiB request body and
+returns one prediction per record, tagged with the active model version. Only
+validated MLflow `pyfunc` versions can be served. Runtime calls use the selected
+private ECS task and a 30-second timeout; the control plane never loads model
+code. See [SERVING_CONTRACT.md](SERVING_CONTRACT.md) for the full payload and
+runtime response contract. Browser sign-in and evaluation authorization remain
+unfinished, so the API is not ready for production exposure.
 
 For an existing model with no deployment selected in an environment, deployment
 history returns an empty array. A nonexistent model returns 404.

@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-import re
 import json
+import logging
+import re
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
-from urllib.error import URLError
 from urllib.parse import urlparse
-from urllib.request import urlopen
 
 from messqry.config import Settings
+from messqry.runtime.transport import (
+    RuntimeTransportError,
+    encode_prediction_payload,
+    http_get_private,
+    predict_from_runtime,
+)
 
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+logger = logging.getLogger("messqry.runtime.ecs")
 
 
 class RuntimeLaunchError(RuntimeError):
@@ -28,6 +35,21 @@ class RuntimeTask:
     private_ip: str
 
 
+@dataclass
+class _WarmTask:
+    task: RuntimeTask
+    active_requests: int = 0
+    timer: threading.Timer | None = None
+    timer_generation: int = 0
+    invalidated: bool = False
+
+
+@dataclass
+class _StartupGate:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    users: int = 0
+
+
 class EcsFargateRuntime:
     """Launch one private 1-vCPU/2-GiB Fargate task and resolve its private IP."""
 
@@ -40,6 +62,8 @@ class EcsFargateRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         health_probe: Callable[[str, int, str, float], bool] | None = None,
+        prediction_transport: Callable[..., Any] = predict_from_runtime,
+        timer_factory: Callable[..., threading.Timer] = threading.Timer,
     ) -> None:
         if settings.runtime_backend != "ecs_fargate":
             raise ValueError("ECS runtime settings are not enabled")
@@ -64,6 +88,12 @@ class EcsFargateRuntime:
         self.monotonic = monotonic
         self.sleep = sleep
         self.health_probe = health_probe or self._probe_model_health
+        self.prediction_transport = prediction_transport
+        self.timer_factory = timer_factory
+        self._warm_tasks: dict[tuple[str, int], _WarmTask] = {}
+        self._startup_locks: dict[tuple[str, int], _StartupGate] = {}
+        self._warm_tasks_lock = threading.RLock()
+        self._closed = False
 
     def start(
         self,
@@ -73,6 +103,7 @@ class EcsFargateRuntime:
         environment: str,
         model_id: str,
         model_version_id: str,
+        model_version: int | None = None,
         artifact_uri: str,
         artifact_sha256: str,
     ) -> RuntimeTask:
@@ -120,7 +151,12 @@ class EcsFargateRuntime:
                                 },
                                 {"name": "MESSQRY_ARTIFACT_URI", "value": artifact_uri},
                                 {"name": "MESSQRY_ARTIFACT_SHA256", "value": artifact_sha256},
-                            ],
+                            ]
+                            + (
+                                [{"name": "MESSQRY_MODEL_VERSION", "value": str(model_version)}]
+                                if model_version is not None
+                                else []
+                            ),
                         }
                     ],
                 },
@@ -153,6 +189,163 @@ class EcsFargateRuntime:
             task=task_arn,
             reason="MessQry runtime idle timeout",
         )
+
+    def predict(
+        self,
+        *,
+        deployment_id: str,
+        deployment_revision: int,
+        environment: str,
+        model_id: str,
+        model_version_id: str,
+        model_version: int,
+        artifact_uri: str,
+        artifact_sha256: str,
+        payload: dict[str, Any],
+    ):
+        """Reuse a revision-matched task and stop it after its idle grace period."""
+
+        # Validate the actual UTF-8 wire representation before any potentially expensive launch.
+        encode_prediction_payload(payload)
+        cache_key = (deployment_id, deployment_revision)
+        with self._warm_tasks_lock:
+            if self._closed:
+                raise RuntimeLaunchError("Model runtime manager is shutting down")
+            warm_task = self._warm_tasks.get(cache_key)
+            if warm_task is not None and warm_task.invalidated:
+                raise RuntimeLaunchError("Model runtime is recovering from a failed request")
+            startup_lock = (
+                None
+                if warm_task is not None
+                else self._startup_locks.setdefault(cache_key, _StartupGate())
+            )
+            if warm_task is not None:
+                self._reserve_warm_task(warm_task)
+            else:
+                startup_lock.users += 1
+
+        if warm_task is None:
+            assert startup_lock is not None
+            startup_lock.lock.acquire()
+            try:
+                with self._warm_tasks_lock:
+                    if self._closed:
+                        raise RuntimeLaunchError("Model runtime manager is shutting down")
+                    warm_task = self._warm_tasks.get(cache_key)
+                    if warm_task is not None and warm_task.invalidated:
+                        raise RuntimeLaunchError(
+                            "Model runtime is recovering from a failed request"
+                        )
+                    if warm_task is not None:
+                        self._reserve_warm_task(warm_task)
+
+                if warm_task is None:
+                    task = self.start(
+                        deployment_id=deployment_id,
+                        deployment_revision=deployment_revision,
+                        environment=environment,
+                        model_id=model_id,
+                        model_version_id=model_version_id,
+                        model_version=model_version,
+                        artifact_uri=artifact_uri,
+                        artifact_sha256=artifact_sha256,
+                    )
+                    with self._warm_tasks_lock:
+                        closed = self._closed
+                        if not closed:
+                            warm_task = _WarmTask(task=task, active_requests=1)
+                            self._warm_tasks[cache_key] = warm_task
+                    if closed:
+                        self._stop_failed_start(task.task_arn)
+                        raise RuntimeLaunchError("Model runtime manager is shutting down")
+            finally:
+                startup_lock.lock.release()
+                with self._warm_tasks_lock:
+                    startup_lock.users -= 1
+                    if (
+                        startup_lock.users == 0
+                        and self._startup_locks.get(cache_key) is startup_lock
+                    ):
+                        self._startup_locks.pop(cache_key, None)
+
+        assert warm_task is not None
+
+        succeeded = False
+        try:
+            result = self.prediction_transport(
+                warm_task.task.private_ip,
+                self.settings.runtime_port,
+                payload,
+                model_id=model_id,
+                environment=environment,
+                model_version=model_version,
+                timeout_seconds=30,
+            )
+            succeeded = True
+            return result
+        finally:
+            task_to_stop = None
+            with self._warm_tasks_lock:
+                warm_task.active_requests -= 1
+                if not succeeded:
+                    warm_task.invalidated = True
+                if warm_task.invalidated and warm_task.active_requests == 0:
+                    if self._warm_tasks.get(cache_key) is warm_task:
+                        self._warm_tasks.pop(cache_key, None)
+                    if warm_task.timer is not None:
+                        warm_task.timer.cancel()
+                    warm_task.timer_generation += 1
+                    task_to_stop = warm_task.task.task_arn
+                elif self._warm_tasks.get(cache_key) is warm_task:
+                    if succeeded and warm_task.active_requests == 0:
+                        warm_task.timer_generation += 1
+                        generation = warm_task.timer_generation
+                        timer = self.timer_factory(
+                            self.settings.runtime_idle_timeout_seconds,
+                            self._stop_if_idle,
+                            args=(cache_key, warm_task, generation),
+                        )
+                        timer.daemon = True
+                        warm_task.timer = timer
+                        timer.start()
+            if task_to_stop is not None:
+                self._stop_failed_start(task_to_stop)
+
+    @staticmethod
+    def _reserve_warm_task(warm_task: _WarmTask) -> None:
+        if warm_task.timer is not None:
+            warm_task.timer.cancel()
+            warm_task.timer = None
+        warm_task.timer_generation += 1
+        warm_task.active_requests += 1
+
+    def _stop_if_idle(
+        self, cache_key: tuple[str, int], warm_task: _WarmTask, generation: int
+    ) -> None:
+        with self._warm_tasks_lock:
+            if (
+                self._warm_tasks.get(cache_key) is not warm_task
+                or warm_task.active_requests
+                or warm_task.timer_generation != generation
+            ):
+                return
+            self._warm_tasks.pop(cache_key, None)
+        self._stop_failed_start(warm_task.task.task_arn)
+
+    def close(self) -> None:
+        """Stop cached tasks and release the ECS client during API shutdown."""
+
+        with self._warm_tasks_lock:
+            self._closed = True
+            warm_tasks = list(self._warm_tasks.values())
+            self._warm_tasks.clear()
+        for warm_task in warm_tasks:
+            if warm_task.timer is not None:
+                warm_task.timer.cancel()
+            self._stop_failed_start(warm_task.task.task_arn)
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            close()
 
     def _wait_until_running(
         self, task_arn: str, deadline: float, model_version_id: str
@@ -208,20 +401,22 @@ class EcsFargateRuntime:
     def _stop_failed_start(self, task_arn: str) -> None:
         try:
             self.stop(task_arn)
-        except Exception:
+        except Exception as exc:
             # Preserve the startup failure; the task may already have stopped.
-            pass
+            logger.warning("ECS runtime task cleanup failed (%s)", type(exc).__name__)
 
     @staticmethod
-    def _probe_model_health(private_ip: str, port: int, model_version_id: str, timeout: float) -> bool:
+    def _probe_model_health(
+        private_ip: str, port: int, model_version_id: str, timeout: float
+    ) -> bool:
         """Return true only after the runtime confirms its loaded model version."""
 
         try:
-            with urlopen(f"http://{private_ip}:{port}/health/ready", timeout=timeout) as response:
-                if response.status != 200:
-                    return False
-                payload = json.loads(response.read(4096))
-        except (OSError, URLError, ValueError, json.JSONDecodeError):
+            status, body = http_get_private(private_ip, port, "/health/ready", timeout)
+            if status != 200 or len(body) > 4096:
+                return False
+            payload = json.loads(body)
+        except (RuntimeTransportError, ValueError, json.JSONDecodeError):
             return False
         return (
             isinstance(payload, dict)
