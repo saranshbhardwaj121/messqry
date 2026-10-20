@@ -14,6 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { loadOverview, normalizeApiTimestamp, type OverviewData } from "./api";
+import { ModelsPage } from "./ModelsPage";
+import { DeploymentsPage } from "./DeploymentsPage";
 import type { Model } from "./types";
 
 const sections = [
@@ -314,7 +316,17 @@ export default function App() {
           {active === "Overview" ? <>
             {error ? <div className="load-banner error-state" role="alert"><span><X size={16} /> Could not load workspace data from the API.</span><button onClick={() => setRefresh((current) => current + 1)}>Retry <ArrowRight size={13} /></button></div> : !data ? <div className="load-banner" role="status"><span className="spinner" /> Connecting to registry API…</div> : null}
             {data && <Overview data={data} onNavigate={navigate} />}
-          </> : <EmptySection section={active} onNavigate={navigate} />}
+          </> : active === "Models" ? <ModelsPage
+            models={data?.models ?? []}
+            loading={!data && !error}
+            loadError={error}
+            onRefresh={() => setRefresh((current) => current + 1)}
+          /> : active === "Deployments" ? <DeploymentsPage
+            models={data?.models ?? []}
+            loading={!data && !error}
+            loadError={error}
+            onRefresh={() => setRefresh((current) => current + 1)}
+          /> : <EmptySection section={active} onNavigate={navigate} />}
           <footer className="page-footer"><span>MESSQRY AI <i>·</i> MODEL LIFECYCLE WORKSPACE</span><span><span className="footer-dot" /> DATA FROM CONFIGURED API <span className="footer-sep">/</span> NO DEMO METRICS</span></footer>
         </div>
       </main>

@@ -20,6 +20,7 @@ coverage/
 .env.*
 !.env.example
 *.db
+/artifacts/
 
 # Editors and OS files
 .vscode/

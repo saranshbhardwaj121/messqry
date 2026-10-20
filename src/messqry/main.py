@@ -14,20 +14,37 @@ from messqry.api.errors import (
     unhandled_exception_handler,
 )
 from messqry.api.evaluations import router as evaluations_router
+from messqry.api.middleware import ArtifactUploadBodyLimitMiddleware
 from messqry.api.routes import models_router, router
+from messqry.artifact_storage import create_artifact_store
 from messqry.config import get_settings
 from messqry.db import dispose_engine
+from messqry.package_validation import PackageLimits
+from messqry.runtime.ecs import create_runtime_manager
 
 settings = get_settings()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Release pooled database connections when the API stops."""
 
+    artifact_store = None
+    runtime_manager = None
     try:
+        artifact_store = create_artifact_store(settings)
+        application.state.artifact_store = artifact_store
+        runtime_manager = create_runtime_manager(settings)
+        application.state.runtime_manager = runtime_manager
         yield
     finally:
+        runtime_client = getattr(runtime_manager, "client", None)
+        close_runtime_client = getattr(runtime_client, "close", None)
+        if close_runtime_client is not None:
+            close_runtime_client()
+        close = getattr(getattr(artifact_store, "client", None), "close", None)
+        if close is not None:
+            close()
         dispose_engine()
 
 
@@ -38,6 +55,11 @@ app = FastAPI(
     redoc_url="/redoc" if settings.docs_enabled else None,
     openapi_url="/openapi.json" if settings.docs_enabled else None,
     lifespan=lifespan,
+)
+app.add_middleware(
+    ArtifactUploadBodyLimitMiddleware,
+    max_body_bytes=PackageLimits().max_archive_bytes + 1024 * 1024,
+    prediction_max_body_bytes=1024 * 1024,
 )
 app.include_router(router)
 app.include_router(models_router)

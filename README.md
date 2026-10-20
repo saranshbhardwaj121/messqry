@@ -2,7 +2,7 @@
 
 MessQry AI is an MLOps platform concept for helping teams register, deploy, monitor, evaluate, and safely update machine-learning models.
 
-This repository contains an initial backend foundation: a configurable FastAPI application, liveness and readiness endpoints, a persistent registry for model metadata and version records, control-plane deployment selection with an audit history, and metric evaluation records. Model artifact storage, inference serving, authentication, request monitoring, automated evaluation, and AWS deployment are not implemented yet.
+This repository contains a configurable FastAPI application, liveness/readiness endpoints, a persistent registry with validated artifact upload/download, Cognito token verification for registry and deployment routes, a deployment selection/history API, metric evaluation records, local/private S3 storage adapters, and a non-executing MLflow `pyfunc` ZIP validator. The web sign-in flow is pending. Inference serving, evaluation-route authorization, request monitoring, automated evaluation, and AWS deployment are not implemented yet.
 
 ## Run locally
 
@@ -47,8 +47,28 @@ Copy `.env.example` to `.env` to customize local settings. Variables use the `ME
 | `MESSQRY_ENVIRONMENT` | `development` | One of `development`, `test`, `staging`, or `production` |
 | `MESSQRY_DOCS_ENABLED` | `true` | Enables or disables interactive API documentation |
 | `MESSQRY_DATABASE_URL` | `sqlite:///./messqry.db` | Secret SQLAlchemy database URL; staging and production require PostgreSQL and the `postgres` extra |
+| `MESSQRY_ARTIFACT_STORAGE` | `local` | `local` for development/test or `s3` for staging/production |
+| `MESSQRY_ARTIFACT_LOCAL_ROOT` | `./artifacts` | Local development artifact root; ignored by Git |
+| `MESSQRY_ARTIFACT_S3_BUCKET` | unset | Required when S3 storage is selected |
+| `MESSQRY_ARTIFACT_S3_PREFIX` | `messqry` | Server-controlled prefix for private S3 object keys |
+| `MESSQRY_AUTH_DEV_BYPASS` | `true` | Local development only; staging/production must set `false` |
+| `MESSQRY_OIDC_ISSUER` | unset | Cognito User Pool issuer URL; required in staging/production |
+| `MESSQRY_OIDC_AUDIENCE` | unset | Cognito web app client ID; required in staging/production |
+| `MESSQRY_OIDC_SERVICE_CLIENT_IDS` | unset | Comma-separated Cognito machine-client IDs; required in staging/production |
+| `MESSQRY_RUNTIME_BACKEND` | `disabled` | `disabled` or optional `ecs_fargate` launcher |
+| `MESSQRY_AWS_REGION` | unset | AWS region when the Fargate launcher is enabled |
+| `MESSQRY_ECS_CLUSTER` | unset | ECS cluster name or ARN when Fargate launching is enabled |
+| `MESSQRY_ECS_TASK_DEFINITION` | unset | Fargate task definition name/ARN/revision |
+| `MESSQRY_ECS_CONTAINER_NAME` | unset | Container in the task definition that runs the model server |
+| `MESSQRY_ECS_SUBNET_IDS` | unset | Comma-separated private subnets for model tasks |
+| `MESSQRY_ECS_SECURITY_GROUP_IDS` | unset | Comma-separated task security groups |
+| `MESSQRY_RUNTIME_STARTUP_TIMEOUT_SECONDS` | `60` | Maximum time to wait for `RUNNING` and a private task IP (1–60) |
 
-Production startup rejects SQLite and requires `MESSQRY_DOCS_ENABLED=false`. Database URLs are kept as secret settings and masked in settings representations and validation errors. Supply production secrets through the runtime secret manager, not a committed `.env` file.
+Production and staging startup reject SQLite and require `MESSQRY_ARTIFACT_STORAGE=s3` with a bucket name. Install the `aws` extra for the S3 SDK, and the `postgres` extra for the PostgreSQL driver (for example, `python -m pip install -e ".[aws,postgres]"`). S3 authentication uses the AWS SDK credential chain; production should use a scoped workload IAM role, not static credentials. Local/test environments default to filesystem storage under `./artifacts`, which is ignored by Git. Database URLs are kept as secret settings and masked in settings representations and validation errors. Supply production secrets through the runtime secret manager, not a committed `.env` file.
+
+The optional Fargate launcher requires private S3 storage and the `aws` extra. It starts one task with public IP assignment disabled, 1 vCPU / 2 GiB, and Fargate's default 20 GiB ephemeral storage. Configure subnet routes, endpoint policies, security-group egress, IAM task roles, image/log access, and the inference port separately. The adapter only verifies that ECS reports a running task with a private address; it does not yet health-check or serve predictions. Keep `MESSQRY_RUNTIME_BACKEND=disabled` until those prerequisites and the runtime image are ready.
+
+Cognito user-pool access tokens are verified against the configured issuer's JWKS. The API accepts the configured web app client and service app clients, requires `token_use=access`, and recognizes `messqry/registry.read`, `messqry/registry.write`, `messqry/deployment.read`, and `messqry/deployment.write`. Configure these Cognito resource-server scopes and grant only the needed scopes to each app client. The development bypass grants these scopes locally and is rejected in staging/production. Deployment scopes currently apply across the single-organization workspace; per-model/environment roles are not implemented. The user-pool ID, region, app clients, and resource server still need to be provisioned in Phase 6; no AWS resources were created.
 
 API errors use an `{ "error": { "code": "...", "message": "..." } }` envelope. Request validation may include field locations and error types, but never echoes submitted values. Unexpected server failures return a generic message and log only the exception type. The readiness endpoint keeps its documented status/database response shape.
 
@@ -64,12 +84,16 @@ API compatibility, pagination, and error conventions are documented in
 - `GET /api/v1/models/{model_id}` — retrieve a model and its version records.
 - `POST /api/v1/models/{model_id}/versions` — register metadata for the next model version.
 - `GET /api/v1/models/{model_id}/versions` — list model versions.
+- `POST /api/v1/models/{model_id}/versions/artifact` — multipart upload of an MLflow `pyfunc` ZIP; creates an immutable version in private storage.
+- `GET /api/v1/models/{model_id}/versions/{version_number}/artifact` — stream a validated package from private storage.
 - `POST /api/v1/models/{model_id}/versions/{version_number}/evaluations` — compare supplied numeric metrics against supplied thresholds and record the result.
 - `GET /api/v1/models/{model_id}/versions/{version_number}/evaluations` — list evaluation records for a version.
 - `PUT /api/v1/models/{model_id}/deployments/{environment}` — select a registered version for an environment and record a deployment or promotion.
-- `POST /api/v1/models/{model_id}/deployments/{environment}/rollback` — select a previously registered version and record a rollback.
+- `POST /api/v1/models/{model_id}/deployments/{environment}/rollback` — select a previously registered version and record a rollback. Repeating a request that selects the version already active returns the current deployment without adding a duplicate history event; this is desired-state idempotency, not request-key deduplication.
 - `GET /api/v1/models/{model_id}/deployments` — list current version selections.
 - `GET /api/v1/models/{model_id}/deployments/{environment}/history` — list deployment changes for an environment.
+
+Registry routes require their corresponding bearer-token scope in staging/production. Deployment list/history routes require `messqry/deployment.read`; promotion and rollback require `messqry/deployment.write`. Local development bypass is enabled only by the development setting. Evaluation routes do not yet enforce authorization and must not be exposed as production APIs until their security work is complete.
 
 ## Local database and migration operations
 
@@ -125,4 +149,4 @@ pushes and pull requests.
 
 ## Direction
 
-Build the product in lifecycle order: model registration and version history; evaluation and promotion policies; runtime deployment and prediction; request and operational monitoring; then optional retraining automation. Evaluation currently checks caller-supplied metrics against caller-supplied thresholds and records pass/fail; it does not run a model or benchmark dataset, and promotion is not yet gated on evaluation status. The current deployment API changes a database pointer and records history; it does not start a serving process or route prediction traffic. The registry stores artifact URIs and metadata only; it does not upload, inspect, or serve artifacts. Keep model and tenant data isolated, protect prediction endpoints, and make deployment changes auditable as those capabilities are added.
+Build the product in lifecycle order: model registration and version history; evaluation and promotion policies; runtime deployment and prediction; request and operational monitoring; then optional retraining automation. Evaluation currently checks caller-supplied metrics against caller-supplied thresholds and records pass/fail; it does not run a model or benchmark dataset, and promotion is not yet gated on evaluation status. The deployment API changes a database pointer and records history; it does not start a serving process or route prediction traffic. New registry uploads use validated immutable artifact records and private storage adapters; legacy artifact-URI rows remain unverified and cannot be downloaded through the new route. Live S3/Cognito integration, PostgreSQL production operation, browser sign-in, and tenant isolation remain unverified or out of scope. Keep model execution isolated and make deployment changes auditable as serving capabilities are added.

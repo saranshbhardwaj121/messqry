@@ -23,13 +23,14 @@ describe("MessQry overview", () => {
     expect(screen.getByText("No models registered")).toBeInTheDocument();
   });
 
-  it("exposes the six workspace destinations and unfinished sections honestly", async () => {
+  it("exposes the six workspace destinations and opens the model registry", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Models" }));
     expect(screen.getByRole("heading", { name: "Models" })).toBeInTheDocument();
-    expect(screen.getByText("This section is not part of the current Overview milestone.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Search models" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Register first model" })).toBeInTheDocument();
   });
 
   it("shows a recoverable API error state", async () => {

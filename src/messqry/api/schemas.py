@@ -5,7 +5,15 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 
 class ModelCreate(BaseModel):
@@ -42,6 +50,12 @@ class ModelVersionRead(BaseModel):
     model_id: UUID
     version: int
     artifact_uri: str
+    package_format: str | None
+    artifact_sha256: str | None
+    artifact_size_bytes: int | None
+    artifact_version_id: str | None
+    artifact_manifest: dict[str, Any] | None
+    validation_status: str
     framework: str | None
     metrics: dict[str, Any]
     created_at: datetime
@@ -85,6 +99,34 @@ class DeploymentEventRead(BaseModel):
     action: str
     reason: str | None
     created_at: datetime
+
+
+class PredictionRequest(BaseModel):
+    """A bounded batch of JSON records converted to the pyfunc tabular input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inputs: list[dict[str, JsonValue]] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_records(self) -> "PredictionRequest":
+        columns = set(self.inputs[0])
+        if not columns or len(columns) > 256:
+            raise ValueError("Prediction records must contain 1 to 256 fields")
+        if any(not key.strip() or len(key) > 128 for key in columns):
+            raise ValueError("Prediction field names must contain 1 to 128 characters")
+        if any(set(record) != columns for record in self.inputs[1:]):
+            raise ValueError("All prediction records must contain the same fields")
+        return self
+
+
+class PredictionResponse(BaseModel):
+    """Predictions paired with the exact model version selected for the request."""
+
+    model_id: UUID
+    environment: str
+    model_version: int = Field(gt=0)
+    predictions: list[JsonValue] = Field(min_length=1)
 
 
 class MetricOperator(str, Enum):

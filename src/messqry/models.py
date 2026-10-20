@@ -4,7 +4,19 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+    event,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from messqry.db import Base
@@ -34,7 +46,17 @@ class ModelVersion(Base):
     """Immutable registration metadata for one model artifact version."""
 
     __tablename__ = "model_versions"
-    __table_args__ = (UniqueConstraint("model_id", "version", name="uq_model_version_number"),)
+    __table_args__ = (
+        UniqueConstraint("model_id", "version", name="uq_model_version_number"),
+        CheckConstraint(
+            "artifact_size_bytes IS NULL OR artifact_size_bytes > 0",
+            name="ck_model_version_artifact_size_positive",
+        ),
+        CheckConstraint(
+            "validation_status IN ('legacy_unverified', 'validated')",
+            name="ck_model_version_validation_status",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     model_id: Mapped[UUID] = mapped_column(
@@ -42,10 +64,52 @@ class ModelVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer)
     artifact_uri: Mapped[str] = mapped_column(String(2048))
+    package_format: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    artifact_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    artifact_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    artifact_version_id: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    artifact_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    validation_status: Mapped[str] = mapped_column(
+        String(24),
+        default="legacy_unverified",
+        server_default=text("'legacy_unverified'"),
+    )
     framework: Mapped[str | None] = mapped_column(String(80), nullable=True)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     model: Mapped[RegisteredModel] = relationship(back_populates="versions")
+
+
+_IMMUTABLE_VERSION_FIELDS = (
+    "model_id",
+    "version",
+    "artifact_uri",
+    "package_format",
+    "artifact_sha256",
+    "artifact_size_bytes",
+    "artifact_version_id",
+    "artifact_manifest",
+    "validation_status",
+    "framework",
+    "metrics",
+    "created_at",
+)
+
+
+@event.listens_for(ModelVersion, "before_update")
+def prevent_model_version_update(mapper, connection, target: ModelVersion) -> None:
+    """Keep registered version metadata append-only through ORM operations."""
+
+    state = inspect(target)
+    if any(state.attrs[name].history.has_changes() for name in _IMMUTABLE_VERSION_FIELDS):
+        raise ValueError("Registered model versions are immutable; register a new version instead")
+
+
+@event.listens_for(ModelVersion, "before_delete")
+def prevent_model_version_delete(mapper, connection, target: ModelVersion) -> None:
+    """Keep registered version records available for audit and deployment history."""
+
+    raise ValueError("Registered model versions cannot be deleted")
 
 
 class Deployment(Base):
@@ -93,6 +157,40 @@ class DeploymentEvent(Base):
     action: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DeploymentRequest(Base):
+    """Persist idempotency results for deployment mutations when callers supply a key."""
+
+    __tablename__ = "deployment_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_id", "environment", "idempotency_key", name="uq_deployment_request_key"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    model_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("models.id", ondelete="CASCADE"), index=True
+    )
+    environment: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    response_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+@event.listens_for(DeploymentEvent, "before_update")
+def prevent_deployment_event_update(mapper, connection, target: DeploymentEvent) -> None:
+    """Keep deployment audit entries append-only through ORM operations."""
+
+    raise ValueError("Deployment events are immutable; record a new event instead")
+
+
+@event.listens_for(DeploymentEvent, "before_delete")
+def prevent_deployment_event_delete(mapper, connection, target: DeploymentEvent) -> None:
+    """Prevent deleting an individual deployment audit entry through the ORM."""
+
+    raise ValueError("Deployment events cannot be deleted")
 
 
 class ModelEvaluation(Base):

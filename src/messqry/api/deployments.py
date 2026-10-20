@@ -1,18 +1,28 @@
 """Control-plane endpoints for selecting and rolling back model versions."""
 
+import hashlib
+import json
 import re
 from http import HTTPStatus
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
 from messqry.api.schemas import DeploymentChange, DeploymentEventRead, DeploymentRead
+from messqry.api.security import Principal, require_scope
 from messqry.db import get_session
-from messqry.models import Deployment, DeploymentEvent, ModelVersion, RegisteredModel
+from messqry.models import (
+    Deployment,
+    DeploymentEvent,
+    DeploymentRequest,
+    ModelVersion,
+    RegisteredModel,
+)
 
 router = APIRouter(prefix="/api/v1/models/{model_id}/deployments", tags=["deployments"])
 ENVIRONMENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -61,8 +71,69 @@ def _record_change(
     )
 
 
+def _request_fingerprint(action: str, payload: DeploymentChange) -> str:
+    canonical = json.dumps(
+        {"action": action, "version": payload.version, "reason": payload.reason},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _replay_request(
+    session: Session,
+    model_id: UUID,
+    environment: str,
+    key: str | None,
+    fingerprint: str,
+) -> DeploymentRead | None:
+    if key is None:
+        return None
+    record = session.scalar(
+        select(DeploymentRequest).where(
+            DeploymentRequest.model_id == model_id,
+            DeploymentRequest.environment == environment,
+            DeploymentRequest.idempotency_key == key,
+        )
+    )
+    if record is None:
+        return None
+    if record.request_hash != fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key was already used for a different deployment request",
+        )
+    return DeploymentRead.model_validate(record.response_snapshot)
+
+
+def _save_request_result(
+    session: Session,
+    deployment: Deployment,
+    *,
+    key: str | None,
+    fingerprint: str,
+) -> None:
+    if key is None:
+        return
+    response = DeploymentRead.model_validate(deployment).model_dump(mode="json")
+    session.add(
+        DeploymentRequest(
+            model_id=deployment.model_id,
+            environment=deployment.environment,
+            idempotency_key=key,
+            request_hash=fingerprint,
+            response_snapshot=response,
+        )
+    )
+
+
 @router.get("", response_model=list[DeploymentRead])
-def list_deployments(model_id: UUID, session: Session = Depends(get_session)) -> list[Deployment]:
+def list_deployments(
+    model_id: UUID,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/deployment.read")),
+) -> list[Deployment]:
+    del principal
     if session.get(RegisteredModel, model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
     return list(
@@ -81,12 +152,27 @@ def deploy_version(
     environment: str,
     payload: DeploymentChange,
     session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/deployment.write")),
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9._~:-]+$",
+        ),
+    ] = None,
 ) -> Deployment:
     """Select a registered version for an environment and record the change."""
 
+    del principal
     _validate_environment(environment)
     if session.get(RegisteredModel, model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
+    fingerprint = _request_fingerprint("deploy", payload)
+    replay = _replay_request(session, model_id, environment, idempotency_key, fingerprint)
+    if replay is not None:
+        return replay
     target = _get_target_version(session, model_id, payload.version)
     deployment = session.scalar(
         select(Deployment)
@@ -113,6 +199,13 @@ def deploy_version(
             )
         elif deployment.model_version_id != target.id:
             _record_change(session, deployment, target, "promote", payload.reason)
+        session.flush()
+        _save_request_result(
+            session,
+            deployment,
+            key=idempotency_key,
+            fingerprint=fingerprint,
+        )
         session.commit()
     except (IntegrityError, StaleDataError) as exc:
         session.rollback()
@@ -130,10 +223,25 @@ def rollback_deployment(
     environment: str,
     payload: DeploymentChange,
     session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/deployment.write")),
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9._~:-]+$",
+        ),
+    ] = None,
 ) -> Deployment:
     """Move an environment back to a selected registered model version."""
 
+    del principal
     _validate_environment(environment)
+    fingerprint = _request_fingerprint("rollback", payload)
+    replay = _replay_request(session, model_id, environment, idempotency_key, fingerprint)
+    if replay is not None:
+        return replay
     deployment = session.scalar(
         select(Deployment)
         .options(selectinload(Deployment.model_version))
@@ -144,14 +252,20 @@ def rollback_deployment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
 
     target = _get_target_version(session, model_id, payload.version)
-    if deployment.model_version_id == target.id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="The requested version is already selected for this environment",
-        )
+    if deployment.model_version_id == target.id and idempotency_key is None:
+        # Treat replayed desired-state requests as an idempotent no-op.
+        return deployment
 
-    _record_change(session, deployment, target, "rollback", payload.reason)
+    if deployment.model_version_id != target.id:
+        _record_change(session, deployment, target, "rollback", payload.reason)
     try:
+        session.flush()
+        _save_request_result(
+            session,
+            deployment,
+            key=idempotency_key,
+            fingerprint=fingerprint,
+        )
         session.commit()
     except (IntegrityError, StaleDataError) as exc:
         session.rollback()
@@ -168,7 +282,9 @@ def deployment_history(
     model_id: UUID,
     environment: str,
     session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/deployment.read")),
 ) -> list[DeploymentEvent]:
+    del principal
     _validate_environment(environment)
     deployment = session.scalar(
         select(Deployment).where(
@@ -177,7 +293,9 @@ def deployment_history(
         )
     )
     if deployment is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+        if session.get(RegisteredModel, model_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
+        return []
     return list(
         session.scalars(
             select(DeploymentEvent)

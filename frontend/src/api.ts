@@ -1,11 +1,98 @@
-import type { Deployment, DeploymentEvent, Evaluation, Model } from "./types";
+import type { Deployment, DeploymentEvent, Evaluation, Model, ModelVersion } from "./types";
 
 const apiRoot = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${apiRoot}${path}`, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  if (!response.ok) throw await responseError(response);
   return (await response.json()) as T;
+}
+
+async function responseError(response: Response): Promise<Error> {
+  try {
+    const payload = (await response.json()) as { error?: { message?: string } };
+    if (payload.error?.message) return new Error(payload.error.message);
+  } catch {
+    // Keep a stable status message when the response body is not JSON.
+  }
+  return new Error(`Request failed (${response.status})`);
+}
+
+async function changeDeployment(
+  modelId: string,
+  environment: string,
+  version: number,
+  action: "promote" | "rollback",
+  reason: string,
+): Promise<Deployment> {
+  const response = await fetch(
+    `${apiRoot}/api/v1/models/${modelId}/deployments/${environment}${action === "rollback" ? "/rollback" : ""}`,
+    {
+      method: action === "rollback" ? "POST" : "PUT",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ version, reason: reason || null }),
+    },
+  );
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as Deployment;
+}
+
+export function promoteDeployment(
+  modelId: string,
+  environment: string,
+  version: number,
+  reason: string,
+): Promise<Deployment> {
+  return changeDeployment(modelId, environment, version, "promote", reason);
+}
+
+export function rollbackDeployment(
+  modelId: string,
+  environment: string,
+  version: number,
+  reason: string,
+): Promise<Deployment> {
+  return changeDeployment(modelId, environment, version, "rollback", reason);
+}
+
+export function loadDeploymentHistory(
+  modelId: string,
+  environment: string,
+): Promise<DeploymentEvent[]> {
+  return getJson<DeploymentEvent[]>(
+    `/api/v1/models/${modelId}/deployments/${environment}/history`,
+  );
+}
+
+export function loadDeployments(modelId: string): Promise<Deployment[]> {
+  return getJson<Deployment[]>(`/api/v1/models/${modelId}/deployments`);
+}
+
+export async function createModel(input: { name: string; description: string }): Promise<Model> {
+  const response = await fetch(`${apiRoot}/api/v1/models`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ name: input.name, description: input.description || null }),
+  });
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as Model;
+}
+
+export async function uploadModelArtifact(
+  modelId: string,
+  file: File,
+  framework: string,
+): Promise<ModelVersion> {
+  const body = new FormData();
+  body.append("file", file);
+  if (framework.trim()) body.append("framework", framework.trim());
+  const response = await fetch(`${apiRoot}/api/v1/models/${modelId}/versions/artifact`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    body,
+  });
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as ModelVersion;
 }
 
 export type OverviewData = {

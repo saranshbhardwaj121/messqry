@@ -4,14 +4,14 @@
 
 The recommended first release is a **single-organization, AWS-hosted production service with a usable web console** for registering supported Python models, storing and retrieving their artifacts, serving them through authenticated prediction endpoints, recording evaluations, enforcing promotion rules, and observing production behavior. It should support one documented model packaging/runtime contract and one AWS region. Production access must be authenticated and authorized; deployment changes and evaluation decisions must be auditable; backups and rollback procedures must be exercised before release.
 
-The current repository is a control-plane scaffold. It records model metadata and artifact URIs, deployment selections/history, and caller-supplied metric checks. It does not upload or inspect model artifacts, execute model evaluations, launch a model runtime, serve predictions, authenticate callers, monitor inference traffic, or deploy to AWS. Existing behavior remains unverified until the checks below pass.
+The current repository has a verified local registry implementation: it validates and stores uploaded MLflow `pyfunc` artifacts, tracks immutable versions, verifies Cognito access tokens for registry routes, and provides a connected registry UI. It also records deployment selections/history and caller-supplied metric checks. An optional, locally testable ECS task launcher now exists, but it is not connected to deployment requests and does not yet health-check or serve predictions. The application does not execute model evaluations, authenticate browser sessions, monitor inference traffic, or deploy to AWS. Real Cognito, S3, PostgreSQL, and production behavior remain unverified until cloud integration and release checks are completed.
 
 ## First-release boundaries
 
 - One organization / one isolated deployment. No shared-tenant SaaS or customer self-service billing.
 - A responsive web console is a first-release requirement for registry, deployment, evaluation, and operational workflows; an API-only release is not complete.
-- A single, explicitly supported model packaging and serving contract. **Working assumption:** MLflow `pyfunc` packaged models. This requires confirmation before Phase 2/3 implementation.
-- AWS-hosted artifact storage and runtime are in scope; local SQLite is a developer convenience, not a production database.
+- A single, explicitly supported model packaging and serving contract. **Owner-approved:** MLflow `pyfunc`, uploaded as a ZIP transport of a model directory containing a root `MLmodel` file with the `python_function` flavor. The control API will inspect structure and metadata without loading model code.
+- AWS-hosted artifact storage and runtime are in scope; local SQLite is a developer convenience, not a production database. **Owner-approved:** private S3 artifact storage accessed by workload IAM roles.
 - Manual registration and controlled evaluation/promotion are in scope. Automated retraining, automatic traffic shifting, and autonomous promotion are not required for the first release.
 - Operational dashboards, alerts, retention, and cost reporting cover the first-release runtime and its AWS resources; enterprise-wide FinOps is future work.
 - Infrastructure and delivery definitions may be prepared and validated locally. Provisioning, deployment, publishing, or paid cloud use require a separate explicit instruction.
@@ -22,10 +22,10 @@ These decisions do not block the repository audit. They must be settled before t
 
 | Decision | Working recommendation | Needed by |
 | --- | --- | --- |
-| Supported model format/runtime | MLflow `pyfunc`; reject unrecognized packaging and avoid loading arbitrary artifacts in the API process | Phase 2 |
-| Authentication and identity | **Owner-selected:** OIDC-compatible user login plus scoped service credentials. Select the specific identity-provider product before integration. | Phase 1 approach selected; provider integration is Phase 3 |
-| Artifact storage | Private S3 bucket, scoped IAM, checksums, and short-lived access where needed | Phase 2 |
-| Deployment isolation | Dedicated container/task per model version with explicit CPU/memory limits; no arbitrary privileged containers | Phase 3 |
+| Supported model format/runtime | **Owner-approved:** MLflow `pyfunc`; ZIP transport of the model directory; reject unrecognized packaging and avoid loading arbitrary artifacts in the API process | Approved for Phase 2 |
+| Authentication and identity | **Owner-selected:** Amazon Cognito User Pools as the OIDC issuer, with user login plus scoped machine-client credentials. Registry and deployment scopes are implemented; deployment scopes apply workspace-wide in the single-organization first release. Per-model/environment access rules are deferred. | Provider and first-release scope boundary selected; values and user-pool provisioning remain Phase 6; web sign-in UX remains Phase 3 |
+| Artifact storage | **Owner-approved:** private S3 bucket, scoped IAM, checksums, and short-lived access where needed | Approved for Phase 2 |
+| Deployment isolation | **Owner-selected:** one ECS Fargate task per model/environment deployment, with no privileged containers; initial task size is **1 vCPU / 2 GiB** and default **20 GiB ephemeral storage**. Tasks stop after a **5-minute idle grace period**; the control plane discovers them by ECS task private IP. Arbitrary internet egress is blocked and only required private AWS endpoints are allowed. Prototype requests may tolerate up to a **60-second cold start**, followed by a **30-second inference timeout**. | Runtime target, baseline, idle policy, storage, private-IP discovery, egress policy, and prototype timeout targets selected for Phase 3 |
 | Evaluation data and reproducibility | Versioned evaluation dataset reference, evaluator/runtime version, metric results, and threshold policy recorded together | Phase 4 |
 | Production region, availability, and recovery targets | Owner must choose region, availability objective, RPO, and RTO before infrastructure sizing | Phase 6 |
 | Data retention and cost limits | Owner must approve request/metric retention, artifact retention, and alert budgets | Phase 5 |
@@ -45,7 +45,7 @@ This is a working design to guide implementation, not an approved deployment spe
 - Centralized logs and metrics capture operational signals with payload and credential redaction. Secrets come from a managed secret store.
 - Staging and production are separate environments in one AWS region. The region and recovery objectives remain owner decisions.
 
-Trust boundaries are the public client to authenticated edge, control plane to metadata database, control plane/runtime to private artifact storage, and control plane to isolated model runtime. The specific identity-provider product, exact AWS compute service, region, and isolation profile remain open decisions.
+Trust boundaries are the public client to authenticated edge, control plane to metadata database, control plane/runtime to private artifact storage, and control plane to isolated model runtime. Cognito and one ECS Fargate task per deployment are selected, with a 1 vCPU / 2 GiB initial task profile, a five-minute idle grace period, private task-IP discovery, private AWS endpoints only for runtime egress, workspace-wide deployment scopes for the single-organization first release, and prototype targets of a 60-second cold start and 30-second inference timeout. The AWS region remains an owner decision; VPC routes, endpoint policies, security-group rules, task roles, task definition, and health behavior must be configured and verified before launch.
 
 ## Phases and dependencies
 
@@ -119,13 +119,13 @@ For frontend tasks, establish these scripts in the scaffold and run them at the 
 - P2.5 (backend) Add lifecycle, access-control, corruption, and migration regression tests.
 - P2.6 (frontend) Build registry screens for model list/search, registration forms, artifact upload/status workflows, version details/history, and empty/loading/error/success states.
 
-**Acceptance criteria:** registered versions are immutable and traceable to checksummed artifacts; artifact access is private and authorized; invalid or oversized packages are rejected; credentials and user data do not appear in logs; supported lifecycle paths are covered by passing tests; users can complete registration and inspect model/version details in the web console with accessible validation and feedback states.
+**Acceptance criteria:** registered versions are immutable and traceable to checksummed artifacts; artifact access is private and authorized; invalid or oversized packages are rejected by a streaming body cap before multipart parsing (including when `Content-Length` is absent); credentials and user data do not appear in logs; supported lifecycle paths are covered by passing tests; users can complete registration and inspect model/version details in the web console with accessible validation and feedback states.
 
 **Verification commands:** `python -m pytest`; `npm --prefix frontend test`; `ruff check .`; migration checks on disposable SQLite and PostgreSQL; artifact validation tests using local fixtures; UI flow tests for registration, list/detail, versions, and error/empty/loading states; S3 integration tests against an approved isolated test bucket only when access is explicitly available.
 
 ### Phase 3 — Secure model serving and deployment lifecycle
 
-**Depends on:** Phases 1–2 and approval of runtime isolation/resource limits.
+**Depends on:** Phases 1–2 and owner approval of runtime isolation/resource limits. The owner selected one ECS Fargate task per deployment, 1 vCPU / 2 GiB, default 20 GiB storage, private AWS endpoints only, five-minute idle grace, private task-IP discovery, up to 60 seconds cold start, 1 MiB requests, and 30-second inference execution. These targets must be implemented and tested before task launch.
 
 **Outcome:** deploy supported model versions through an authenticated, bounded serving path with reliable promotion, rollback, and audit.
 
@@ -133,14 +133,14 @@ For frontend tasks, establish these scripts in the scaffold and run them at the 
 
 - P3.1 (backend) Implement the approved serving adapter and prediction API contract for the supported model format.
 - P3.2 (backend) Run model workloads outside the control API process with network, CPU, memory, filesystem, and timeout limits.
-- P3.3 (backend) Implement authenticated deployment controls and authorization by model/environment.
+- P3.3 (backend) Implement authenticated deployment controls with workspace-wide scopes for the single-organization first release.
 - P3.4 (backend) Complete deployment state transitions, optimistic concurrency, idempotency, and immutable audit history.
 - P3.5 (backend) Implement health checks, graceful shutdown, and rollback behavior for failed runtime starts.
 - P3.6 (backend) Add integration, concurrency, abuse, and failure-injection tests.
 - P3.7 (frontend) Build deployment screens showing environment state, selected version, promotion/rollback actions, confirmation, and audit history.
 - P3.8 (frontend) Build sign-in, session-expiry, access-denied, and scoped service-credential guidance states for the approved OIDC-compatible identity and service-credential approach.
 
-**Acceptance criteria:** only supported artifacts can be served; a caller cannot access another unauthorized model; prediction requests are bounded and return documented errors; concurrent promotions cannot produce inconsistent current state or history; failed starts leave a recoverable state; rollback restores the selected prior version and produces an audit event; users can inspect deployment state and complete authorized promotion/rollback flows from the UI with clear confirmations and resulting history; sign-in, expired-session, and access-denied states use the selected identity provider without exposing credentials.
+**Acceptance criteria:** only supported artifacts can be served; deployment reads and changes require the corresponding workspace scope; prediction requests are bounded and return documented errors; concurrent promotions cannot produce inconsistent current state or history; retries with the same idempotency key return their original result and key reuse with different request content is rejected; failed starts leave a recoverable state; rollback restores the selected prior version and produces an audit event; users can inspect deployment state and complete authorized promotion/rollback flows from the UI with clear confirmations and resulting history; sign-in, expired-session, and access-denied states use the selected identity provider without exposing credentials.
 
 **Verification commands:** `python -m pytest`; `npm --prefix frontend test`; configured lint/type/security checks; SQLite and PostgreSQL concurrency tests; container security checks; API contract tests; browser tests for deployment state/promotion/rollback/history; failure-injection tests for start/stop and dependency loss.
 

@@ -3,6 +3,12 @@ export type ModelVersion = {
   model_id: string;
   version: number;
   artifact_uri: string;
+  package_format?: string | null;
+  artifact_sha256?: string | null;
+  artifact_size_bytes?: number | null;
+  artifact_version_id?: string | null;
+  artifact_manifest?: Record<string, unknown> | null;
+  validation_status?: "legacy_unverified" | "validated";
   framework: string | null;
   metrics: Record<string, unknown>;
   created_at: string;
@@ -26,9 +32,11 @@ export type Deployment = {
 
 export type DeploymentEvent = {
   id: string;
+  deployment_id: string;
   action: string;
   reason: string | null;
   created_at: string;
+  from_model_version_id: string | null;
   to_model_version_id: string;
 };
 

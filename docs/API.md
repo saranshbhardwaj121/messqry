@@ -43,5 +43,19 @@ The route inventory and initial local run instructions are maintained in the
 repository [README](../README.md#current-api). The OpenAPI document at
 `/openapi.json` is the machine-readable contract when API docs are enabled.
 
-Current v1 list responses are unpaginated. The current API is a development
-foundation and is not yet an authenticated production contract.
+Current v1 list responses are unpaginated. Registry routes require registry
+scopes, and deployment list/history/change routes require deployment read/write
+scopes. The API still lacks the prediction endpoint, browser sign-in, and
+evaluation authorization, so it is not a production contract yet.
+
+For an existing model with no deployment selected in an environment, deployment
+history returns an empty array. A nonexistent model returns 404.
+
+Deployment `PUT` and rollback `POST` requests may include an `Idempotency-Key`
+header containing 1–128 ASCII letters, digits, `.`, `_`, `~`, `:`, or `-`. The
+key is scoped to a model and environment. A retry with the same key and the same
+action/version/reason returns the original response snapshot, even if the
+deployment has changed since then. Reusing the key for a different request
+returns 409. Requests without a key keep the ordinary desired-state behavior.
+If concurrent requests race to store the same new key, one may receive 409 and
+can retry with that key to retrieve the recorded response.
