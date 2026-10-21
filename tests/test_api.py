@@ -367,6 +367,48 @@ def test_deployment_idempotency_replays_result_and_rejects_key_reuse(session_fac
         assert len(deployments.deployment_history(model_id, "staging", session)) == 2
 
 
+def test_idempotent_deploy_replays_winner_after_initial_lookup_misses(session_factory, monkeypatch):
+    model_id, _ = create_model_and_versions(session_factory)
+    key = "deployment-race-1"
+    with session_factory() as session:
+        deployments.deploy_version(model_id, "staging", DeploymentChange(version=1), session)
+    with session_factory() as winner_session:
+        winner = deployments.deploy_version(
+            model_id,
+            "staging",
+            DeploymentChange(version=2, reason="same request"),
+            winner_session,
+            idempotency_key=key,
+        )
+
+    real_replay = deployments._replay_request
+    replay_calls = 0
+
+    def miss_once_then_replay(session, requested_model_id, environment, request_key, fingerprint):
+        nonlocal replay_calls
+        replay_calls += 1
+        if replay_calls == 1:
+            # Model the initial lookup racing ahead of the winner's commit.
+            return None
+        return real_replay(session, requested_model_id, environment, request_key, fingerprint)
+
+    monkeypatch.setattr(deployments, "_replay_request", miss_once_then_replay)
+    with session_factory() as retry_session:
+        retry = deployments.deploy_version(
+            model_id,
+            "staging",
+            DeploymentChange(version=2, reason="same request"),
+            retry_session,
+            idempotency_key=key,
+        )
+
+    assert retry.model_version.id == winner.model_version.id
+    assert retry.model_version.version == winner.model_version.version == 2
+    assert replay_calls == 2
+    with session_factory() as session:
+        assert len(deployments.deployment_history(model_id, "staging", session)) == 2
+
+
 def test_deployment_events_are_immutable(session_factory):
     model_id, _ = create_model_and_versions(session_factory)
     with session_factory() as session:

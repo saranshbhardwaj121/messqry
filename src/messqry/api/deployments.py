@@ -218,6 +218,25 @@ def _save_request_result(
     )
 
 
+def _replay_after_conflict(
+    session: Session,
+    model_id: UUID,
+    environment: str,
+    key: str | None,
+    fingerprint: str,
+    cause: Exception,
+) -> DeploymentRead:
+    """Return a winner's snapshot when an idempotent request raced its commit."""
+    session.rollback()
+    replay = _replay_request(session, model_id, environment, key, fingerprint)
+    if replay is not None:
+        return replay
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="A concurrent deployment change occurred; retry the request",
+    ) from cause
+
+
 @router.get("", response_model=list[DeploymentRead])
 def list_deployments(
     model_id: UUID,
@@ -299,11 +318,9 @@ def deploy_version(
         )
         session.commit()
     except (IntegrityError, StaleDataError) as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A concurrent deployment change occurred; retry the request",
-        ) from exc
+        return _replay_after_conflict(
+            session, model_id, environment, idempotency_key, fingerprint, exc
+        )
     session.refresh(deployment)
     return deployment
 
@@ -359,11 +376,9 @@ def rollback_deployment(
         )
         session.commit()
     except (IntegrityError, StaleDataError) as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A concurrent deployment change occurred; retry the request",
-        ) from exc
+        return _replay_after_conflict(
+            session, model_id, environment, idempotency_key, fingerprint, exc
+        )
     session.refresh(deployment)
     return deployment
 
