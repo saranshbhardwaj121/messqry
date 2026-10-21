@@ -52,8 +52,10 @@ returns one prediction per record, tagged with the active model version. Only
 validated MLflow `pyfunc` versions can be served. Runtime calls use the selected
 private ECS task and a 30-second timeout; the control plane never loads model
 code. See [SERVING_CONTRACT.md](SERVING_CONTRACT.md) for the full payload and
-runtime response contract. Browser sign-in and evaluation authorization remain
-unfinished, so the API is not ready for production exposure.
+runtime response contract. The frontend includes Cognito authorization-code
+sign-in with PKCE and attaches the access token to API calls when configured;
+live Cognito setup is unverified. Evaluation routes remain unauthenticated, so
+the API is not ready for production exposure.
 
 For an existing model with no deployment selected in an environment, deployment
 history returns an empty array. A nonexistent model returns 404.
@@ -64,5 +66,7 @@ key is scoped to a model and environment. A retry with the same key and the same
 action/version/reason returns the original response snapshot, even if the
 deployment has changed since then. Reusing the key for a different request
 returns 409. Requests without a key keep the ordinary desired-state behavior.
-If concurrent requests race to store the same new key, one may receive 409 and
-can retry with that key to retrieve the recorded response.
+If concurrent requests race to store the same key and request, the losing
+request rechecks the idempotency record after its transaction conflict and
+returns the winner's response snapshot. A concurrent different request using
+the same key receives 409.
