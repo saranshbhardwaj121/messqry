@@ -72,6 +72,7 @@ def test_ecs_task_uses_selected_profile_and_private_network():
         model_version_id="version-2",
         artifact_uri="s3://messqry-private-artifacts/models/model-1/version-2.zip",
         artifact_sha256="a" * 64,
+        artifact_version_id="s3-version-1",
     )
 
     assert handle == RuntimeTask(
@@ -107,6 +108,9 @@ def test_ecs_task_uses_selected_profile_and_private_network():
         "MESSQRY_MODEL_VERSION_ID": "version-2",
         "MESSQRY_ARTIFACT_URI": "s3://messqry-private-artifacts/models/model-1/version-2.zip",
         "MESSQRY_ARTIFACT_SHA256": "a" * 64,
+        "MESSQRY_ARTIFACT_VERSION_ID": "s3-version-1",
+        "MESSQRY_RUNTIME_PORT": "8000",
+        "AWS_REGION": "us-east-1",
     }
     assert probes[0][:3] == ("10.0.1.17", 8000, "version-2")
     assert 0 < probes[0][3] <= 2

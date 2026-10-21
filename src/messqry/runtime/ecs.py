@@ -106,6 +106,7 @@ class EcsFargateRuntime:
         model_version: int | None = None,
         artifact_uri: str,
         artifact_sha256: str,
+        artifact_version_id: str | None = None,
     ) -> RuntimeTask:
         """Start a private task for one deployment revision and wait for its IP."""
 
@@ -151,7 +152,22 @@ class EcsFargateRuntime:
                                 },
                                 {"name": "MESSQRY_ARTIFACT_URI", "value": artifact_uri},
                                 {"name": "MESSQRY_ARTIFACT_SHA256", "value": artifact_sha256},
+                                {
+                                    "name": "MESSQRY_RUNTIME_PORT",
+                                    "value": str(self.settings.runtime_port),
+                                },
+                                {"name": "AWS_REGION", "value": self.settings.aws_region},
                             ]
+                            + (
+                                [
+                                    {
+                                        "name": "MESSQRY_ARTIFACT_VERSION_ID",
+                                        "value": artifact_version_id,
+                                    }
+                                ]
+                                if artifact_version_id is not None
+                                else []
+                            )
                             + (
                                 [{"name": "MESSQRY_MODEL_VERSION", "value": str(model_version)}]
                                 if model_version is not None
@@ -201,6 +217,7 @@ class EcsFargateRuntime:
         model_version: int,
         artifact_uri: str,
         artifact_sha256: str,
+        artifact_version_id: str | None = None,
         payload: dict[str, Any],
     ):
         """Reuse a revision-matched task and stop it after its idle grace period."""
@@ -249,6 +266,7 @@ class EcsFargateRuntime:
                         model_version=model_version,
                         artifact_uri=artifact_uri,
                         artifact_sha256=artifact_sha256,
+                        artifact_version_id=artifact_version_id,
                     )
                     with self._warm_tasks_lock:
                         closed = self._closed

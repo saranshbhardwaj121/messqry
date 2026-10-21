@@ -161,6 +161,7 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
     assert response.predictions == [0.91]
     assert runtime.request["model_id"] == str(model_id)
     assert runtime.request["model_version"] == version_number
+    assert runtime.request["artifact_version_id"] is None
     assert runtime.request["payload"] == {"inputs": [{"feature": 1}]}
     del app.state.runtime_manager
 

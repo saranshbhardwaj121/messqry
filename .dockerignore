@@ -1,0 +1,12 @@
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+artifacts/
+messqry.db*
+frontend/
+migrations/
+tests/

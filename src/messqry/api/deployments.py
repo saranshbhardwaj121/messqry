@@ -106,6 +106,7 @@ def predict(
         "model_version": version.version,
         "artifact_uri": version.artifact_uri,
         "artifact_sha256": version.artifact_sha256,
+        "artifact_version_id": version.artifact_version_id,
         "payload": request_payload,
     }
     session.rollback()
