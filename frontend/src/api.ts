@@ -1,9 +1,10 @@
 import type { Deployment, DeploymentEvent, Evaluation, Model, ModelVersion } from "./types";
+import { authorizedFetch } from "./auth";
 
 const apiRoot = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${apiRoot}${path}`, { headers: { Accept: "application/json" } });
+  const response = await authorizedFetch(`${apiRoot}${path}`, { headers: { Accept: "application/json" } });
   if (!response.ok) throw await responseError(response);
   return (await response.json()) as T;
 }
@@ -25,7 +26,7 @@ async function changeDeployment(
   action: "promote" | "rollback",
   reason: string,
 ): Promise<Deployment> {
-  const response = await fetch(
+  const response = await authorizedFetch(
     `${apiRoot}/api/v1/models/${modelId}/deployments/${environment}${action === "rollback" ? "/rollback" : ""}`,
     {
       method: action === "rollback" ? "POST" : "PUT",
@@ -69,7 +70,7 @@ export function loadDeployments(modelId: string): Promise<Deployment[]> {
 }
 
 export async function createModel(input: { name: string; description: string }): Promise<Model> {
-  const response = await fetch(`${apiRoot}/api/v1/models`, {
+  const response = await authorizedFetch(`${apiRoot}/api/v1/models`, {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({ name: input.name, description: input.description || null }),
@@ -86,7 +87,7 @@ export async function uploadModelArtifact(
   const body = new FormData();
   body.append("file", file);
   if (framework.trim()) body.append("framework", framework.trim());
-  const response = await fetch(`${apiRoot}/api/v1/models/${modelId}/versions/artifact`, {
+  const response = await authorizedFetch(`${apiRoot}/api/v1/models/${modelId}/versions/artifact`, {
     method: "POST",
     headers: { Accept: "application/json" },
     body,

@@ -17,6 +17,14 @@ import { loadOverview, normalizeApiTimestamp, type OverviewData } from "./api";
 import { ModelsPage } from "./ModelsPage";
 import { DeploymentsPage } from "./DeploymentsPage";
 import type { Model } from "./types";
+import { AuthScreen } from "./AuthScreen";
+import {
+  getAuthMessage,
+  getAuthStatus,
+  initializeAuth,
+  subscribeAuth,
+  type AuthStatus,
+} from "./auth";
 
 const sections = [
   { label: "Overview", icon: PanelsTopLeft },
@@ -230,6 +238,8 @@ function EmptySection({ section, onNavigate }: { section: string; onNavigate: (s
 }
 
 export default function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(getAuthStatus());
+  const [authMessage, setAuthMessage] = useState<string | undefined>(getAuthMessage());
   const [active, setActive] = useState("Overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [data, setData] = useState<OverviewData | null>(null);
@@ -248,6 +258,15 @@ export default function App() {
     : "LOCAL";
 
   useEffect(() => {
+    const unsubscribe = subscribeAuth((nextStatus, message) => {
+      setAuthStatus(nextStatus);
+      setAuthMessage(message);
+    });
+    void initializeAuth();
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     if (!window.matchMedia) return;
     const media = window.matchMedia("(max-width: 760px)");
     const update = () => setIsMobile(media.matches);
@@ -256,12 +275,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (authStatus !== "local" && authStatus !== "authenticated") {
+      setData(null);
+      setError(false);
+      return;
+    }
     let alive = true;
     setError(false);
     setData(null);
     loadOverview().then((result) => { if (alive) setData(result); }).catch(() => { if (alive) setError(true); });
     return () => { alive = false; };
-  }, [refresh]);
+  }, [authStatus, refresh]);
 
   useEffect(() => {
     if (!mobileNavOpen || !isMobile) return;
@@ -299,6 +323,9 @@ export default function App() {
     setMobileNavOpen(false);
     if (isMobile) window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
   };
+  if (authStatus !== "local" && authStatus !== "authenticated") {
+    return <AuthScreen status={authStatus} message={authMessage} />;
+  }
   return (
     <div className="app-shell">
       <Sidebar

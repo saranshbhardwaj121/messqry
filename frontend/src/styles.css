@@ -260,6 +260,24 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
 .footer-sep { margin: 0 6px; color: #555b60; }
 .scrim { display: none; }
 
+.auth-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0%, #21140e 0, #0b0c0d 48%, #070809 100%); }
+.auth-card { width: min(100%, 440px); padding: 28px; border: 1px solid var(--border-strong); border-radius: 12px; background: #111315; box-shadow: 0 18px 55px rgb(0 0 0 / 48%); }
+.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
+.auth-brand strong { font-size: 16px; font-weight: 650; }
+.auth-brand strong span { margin-left: 4px; color: var(--primary); font-size: 12px; }
+.auth-icon { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 17px; border: 1px solid rgb(255 106 31 / 40%); border-radius: 9px; background: rgb(255 106 31 / 12%); color: var(--primary); }
+.auth-icon-warning { border-color: rgb(226 123 119 / 38%); background: rgb(226 123 119 / 10%); color: var(--failure); }
+.auth-card h1 { margin: 7px 0 0; font-size: 25px; font-weight: 580; letter-spacing: -.025em; }
+.auth-detail { margin: 9px 0 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.auth-actions { margin-top: 22px; }
+.auth-actions .button-primary { width: 100%; min-height: 42px; font-size: 13px; }
+.auth-actions .button-primary:disabled { cursor: wait; opacity: .7; }
+.credential-guidance { display: flex; gap: 10px; margin-top: 23px; padding: 13px; border: 1px solid var(--border); border-radius: 8px; background: #0c0e0f; color: var(--muted); }
+.credential-guidance > svg { flex: 0 0 auto; margin-top: 1px; color: #c2c7ca; }
+.credential-guidance strong { color: #d9dddf; font-size: 12px; font-weight: 570; }
+.credential-guidance p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.auth-card > footer { margin-top: 17px; color: var(--subtle); font-size: 11px; line-height: 1.5; }
+
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (hover: hover) and (pointer: fine) {
   .panel, .metric-card { transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
@@ -296,6 +314,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
   .registry-model-list ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 440px) {
+  .auth-page { padding: 15px; }
+  .auth-card { padding: 21px; }
   .metric-grid { gap: 8px; }
   .metric-card { min-height: 108px; padding: 10px; }
   .metric-top { align-items: flex-start; font-size: 9px; }
