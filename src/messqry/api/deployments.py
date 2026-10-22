@@ -85,7 +85,7 @@ def predict(
         encode_prediction_payload(request_payload)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
             detail="Prediction request exceeds the maximum runtime payload size",
         ) from exc
     runtime = getattr(request.app.state, "runtime_manager", None)

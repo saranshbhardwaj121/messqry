@@ -40,6 +40,51 @@ describe("MessQry overview", () => {
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
+  it("keeps registry and deployment summaries visible when evaluation reads are forbidden", async () => {
+    const model = {
+      id: "model-1",
+      name: "risk-model",
+      description: null,
+      created_at: "2026-10-19T12:00:00Z",
+    };
+    const version = {
+      id: "version-1",
+      model_id: "model-1",
+      version: 1,
+      artifact_uri: "s3://private/model.zip",
+      framework: "sklearn",
+      metrics: {},
+      created_at: "2026-10-19T12:00:00Z",
+    };
+    const deployment = {
+      id: "deployment-1",
+      model_id: "model-1",
+      environment: "staging",
+      model_version: version,
+      updated_at: "2026-10-19T12:00:00Z",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/v1/models")) return { ok: true, json: async () => [model] };
+      if (path.endsWith("/api/v1/models/model-1")) {
+        return { ok: true, json: async () => ({ ...model, versions: [version] }) };
+      }
+      if (path.endsWith("/deployments")) return { ok: true, json: async () => [deployment] };
+      if (path.endsWith("/staging/history")) return { ok: true, json: async () => [] };
+      if (path.endsWith("/versions/1/evaluations")) {
+        return { ok: false, status: 403, json: async () => ({ error: { message: "Forbidden" } }) };
+      }
+      throw new Error(`Unexpected API request: ${path}`);
+    }));
+
+    render(<App />);
+    expect(await screen.findByText("risk-model")).toBeInTheDocument();
+    expect(screen.getByText("Evaluation access not granted")).toBeInTheDocument();
+    const deploymentMetric = screen.getByText("DEPLOYMENT SELECTIONS").closest(".metric-card");
+    expect(deploymentMetric?.querySelector(".metric-value")).toHaveTextContent("01");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("uses typed evaluation status even when a model name contains failure wording", async () => {
     const model = { id: "model-1", name: "failed-payment-detector", description: "Forecasting", created_at: "2026-10-19T12:00:00Z" };
     const previousVersion = { id: "version-1", model_id: "model-1", version: 1, artifact_uri: "s3://models/demand/1", framework: "mlflow", metrics: {}, created_at: "2026-10-19T11:00:00Z" };

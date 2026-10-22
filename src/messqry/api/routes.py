@@ -1,6 +1,7 @@
 """HTTP routes for the initial API surface."""
 
 import logging
+from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -131,9 +132,7 @@ def upload_model_artifact(
     try:
         validated = validate_mlflow_pyfunc_package(file.file, limits=PackageLimits())
     except PackageValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=HTTPStatus.UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     current_version = session.scalar(
         select(func.max(ModelVersion.version)).where(ModelVersion.model_id == model_id)

@@ -152,13 +152,15 @@ For frontend tasks, establish these scripts in the scaffold and run them at the 
 
 **Required tasks**
 
-- P4.1 (backend) Define evaluation datasets, dataset versions, evaluator versions, metric semantics, and provenance.
-- P4.2 (backend) Store evaluation runs and threshold policies as durable versioned records.
+- P4.1 (backend) Define evaluation datasets, dataset versions, evaluator versions, metric semantics, and provenance. New evaluation records identify dataset name/version/SHA-256 and evaluator name/version; historical records retain unknown provenance rather than being backfilled with guesses. Caller-provided metric names and explicit comparison operators define semantics for this initial contract.
+- P4.2 (backend) Store evaluation runs and threshold policies as durable versioned records. Policies are immutable and keyed by model, environment, name, and explicit version; each evaluation stores the policy identity and threshold snapshot it used.
 - P4.3 (backend) Enforce passing, current evaluation policies on production promotion; define override authorization and audit.
 - P4.4 (backend) Add negative, boundary, reproducibility, and bypass-resistance tests.
 - P4.5 (frontend) Build evaluation screens for approved inputs, version comparisons, metric/threshold results, provenance, and promotion eligibility.
 
-**Acceptance criteria:** an evaluation can be reproduced from recorded inputs; metric direction and threshold semantics are explicit; failed, missing, stale, or incompatible evaluations cannot be promoted to production except through an authorized, audited override; all policy paths are tested; the UI presents evaluation provenance, threshold outcomes, and promotion eligibility clearly.
+**Acceptance criteria:** an evaluation can be reproduced from recorded inputs; metric direction and threshold semantics are explicit; failed, missing, stale, or incompatible evaluations cannot be promoted to production except through an authorized, audited override; all policy paths are tested; the UI presents evaluation provenance, threshold outcomes, and promotion eligibility clearly. When evaluation read permission is absent, evaluation data is labeled unavailable without hiding otherwise permitted registry/deployment summaries.
+
+**Security prerequisite:** evaluation list/create routes use workspace scopes `messqry/evaluation.read` and `messqry/evaluation.write`. API enforcement and local OpenAPI coverage are implemented; Cognito resource-server setup and live token verification remain Phase 6 work.
 
 **Verification commands:** `python -m pytest`; `npm --prefix frontend test`; evaluation replay and deterministic fixture comparisons; authorization and policy-bypass tests; UI tests for metric provenance, threshold outcomes, and promotion eligibility; migration checks on disposable SQLite and PostgreSQL.
 

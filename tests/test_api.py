@@ -15,6 +15,9 @@ from messqry.api import deployments, evaluations, routes
 from messqry.api.schemas import (
     DeploymentChange,
     EvaluationCreate,
+    EvaluationCreateV2,
+    EvaluationPolicyCreate,
+    EvaluationReadV1,
     ModelCreate,
     ModelVersionCreate,
     PredictionRequest,
@@ -22,15 +25,17 @@ from messqry.api.schemas import (
 )
 from messqry.api.security import Principal, ScopeRequirement
 from messqry.artifact_storage import LocalArtifactStore
+from messqry.config import Settings
 from messqry.main import app
 from messqry.models import (
     Deployment,
     DeploymentEvent,
+    EvaluationPolicy,
     ModelEvaluation,
     ModelVersion,
     RegisteredModel,
 )
-from messqry.runtime.ecs import RuntimeLaunchError
+from messqry.runtime.ecs import EcsFargateRuntime, RuntimeLaunchError, RuntimeTask
 from messqry.runtime.transport import RuntimeTransportError
 
 
@@ -99,7 +104,12 @@ def test_health_readiness_and_openapi_contract(session_factory):
     def required_scopes(path, method):
         route = next(
             route
-            for route in deployments.router.routes
+            for route in (
+                *deployments.router.routes,
+                *evaluations.router.routes,
+                *evaluations.policy_router.routes,
+                *evaluations.v2_router.routes,
+            )
             if getattr(route, "path", None) == path and method in getattr(route, "methods", set())
         )
         return {
@@ -114,6 +124,40 @@ def test_health_readiness_and_openapi_contract(session_factory):
     assert required_scopes(f"{deployment_path}/rollback", "POST") == {"messqry/deployment.write"}
     assert required_scopes(f"{deployment_path}/history", "GET") == {"messqry/deployment.read"}
     assert required_scopes(f"{deployment_path}/predict", "POST") == {"messqry/prediction.invoke"}
+    evaluation_path = "/api/v1/models/{model_id}/versions/{version_number}/evaluations"
+    assert app.openapi()["paths"][evaluation_path]["get"]["security"] == [{"HTTPBearer": []}]
+    assert app.openapi()["paths"][evaluation_path]["post"]["security"] == [{"HTTPBearer": []}]
+    evaluation_openapi = app.openapi()
+    v1_request_schema = evaluation_openapi["paths"][evaluation_path]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+    assert set(evaluation_openapi["components"]["schemas"][v1_request_schema]["required"]) == {
+        "metrics",
+        "thresholds",
+    }
+    assert required_scopes(evaluation_path, "GET") == {"messqry/evaluation.read"}
+    assert required_scopes(evaluation_path, "POST") == {"messqry/evaluation.write"}
+    evaluation_v2_path = "/api/v2/models/{model_id}/versions/{version_number}/evaluations"
+    assert app.openapi()["paths"][evaluation_v2_path]["post"]["security"] == [{"HTTPBearer": []}]
+    assert required_scopes(evaluation_v2_path, "POST") == {"messqry/evaluation.write"}
+    policy_path = "/api/v1/models/{model_id}/evaluation-policies"
+    assert app.openapi()["paths"][policy_path]["get"]["security"] == [{"HTTPBearer": []}]
+    assert app.openapi()["paths"][policy_path]["post"]["security"] == [{"HTTPBearer": []}]
+    assert required_scopes(policy_path, "GET") == {"messqry/evaluation.read"}
+    assert required_scopes(policy_path, "POST") == {"messqry/evaluation.write"}
+    evaluation_read_requirement = next(
+        dependency.call
+        for route in evaluations.router.routes
+        if getattr(route, "path", None) == evaluation_path
+        and "GET" in getattr(route, "methods", set())
+        for dependency in route.dependant.dependencies
+        if isinstance(dependency.call, ScopeRequirement)
+    )
+    with pytest.raises(HTTPException) as denied:
+        evaluation_read_requirement(Principal("limited-user", "user", frozenset()))
+    assert denied.value.status_code == status.HTTP_403_FORBIDDEN
+    permitted = Principal("reader", "user", frozenset({"messqry/evaluation.read"}))
+    assert evaluation_read_requirement(permitted) is permitted
 
 
 def test_prediction_route_uses_active_validated_version_and_runtime(session_factory):
@@ -165,6 +209,92 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
     assert runtime.request["model_version"] == version_number
     assert runtime.request["artifact_version_id"] is None
     assert runtime.request["payload"] == {"inputs": [{"feature": 1}]}
+    del app.state.runtime_manager
+
+
+def test_prediction_route_integrates_with_runtime_dispatcher(session_factory):
+    with session_factory() as session:
+        model = routes.create_model(ModelCreate(name="integrated-runtime-model"), session)
+        version = ModelVersion(
+            model_id=model.id,
+            version=1,
+            artifact_uri="s3://private-bucket/model.zip",
+            artifact_version_id="s3-object-version-1",
+            package_format="mlflow_pyfunc",
+            artifact_sha256="d" * 64,
+            validation_status="validated",
+        )
+        session.add(version)
+        session.commit()
+        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+
+        class FakeTimer:
+            def __init__(self, *_args, **_kwargs):
+                self.daemon = False
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        class FakeEcsClient:
+            def __init__(self):
+                self.stopped = []
+
+            def stop_task(self, **kwargs):
+                self.stopped.append(kwargs)
+
+        settings = Settings(
+            runtime_backend="ecs_fargate",
+            artifact_storage="s3",
+            artifact_s3_bucket="private-bucket",
+            aws_region="us-east-1",
+            ecs_cluster="test-cluster",
+            ecs_task_definition="test-runtime:1",
+            ecs_container_name="model-runtime",
+            ecs_subnet_ids="subnet-private-a",
+            ecs_security_group_ids="sg-runtime",
+        )
+        observed = {}
+
+        def prediction_transport(_ip, _port, payload, **kwargs):
+            assert not session.in_transaction()
+            observed.update(kwargs)
+            observed["payload"] = payload
+            return PredictionResponse(
+                model_id=model.id,
+                environment="production",
+                model_version=1,
+                predictions=[0.98],
+            )
+
+        runtime = EcsFargateRuntime(
+            settings,
+            client=FakeEcsClient(),
+            health_probe=lambda *_args: True,
+            prediction_transport=prediction_transport,
+            timer_factory=FakeTimer,
+        )
+        runtime.start = lambda **_kwargs: RuntimeTask(task_arn="test-task", private_ip="10.0.2.15")
+        app.state.runtime_manager = runtime
+        request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
+        result = deployments.predict(
+            model.id,
+            "production",
+            PredictionRequest(inputs=[{"feature": 1}]),
+            request,
+            session,
+            Principal("predictor", "service", frozenset({"messqry/prediction.invoke"})),
+        )
+
+    assert result.model_version == 1
+    assert result.predictions == [0.98]
+    assert observed["model_version"] == 1
+    assert observed["model_id"] == str(model.id)
+    assert observed["environment"] == "production"
+    assert observed["payload"] == {"inputs": [{"feature": 1}]}
+    runtime.close()
     del app.state.runtime_manager
 
 
@@ -248,7 +378,7 @@ def test_oversized_prediction_is_rejected_before_runtime_call(session_factory):
                 session,
                 Principal("test-user", "user", frozenset({"messqry/prediction.invoke"})),
             )
-        assert rejected.value.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        assert rejected.value.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     del app.state.runtime_manager
 
 
@@ -358,7 +488,7 @@ def test_artifact_upload_rejects_invalid_package_without_registering_version(
                 store=store,
                 principal=Principal("operator", "user", frozenset({"messqry/registry.write"})),
             )
-        assert rejected.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert rejected.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
         assert len(routes.list_model_versions(model_id, session)) == 2
     assert not list((tmp_path / "artifacts").rglob("*.zip"))
 
@@ -592,39 +722,218 @@ def test_stale_deployment_change_returns_conflict_without_corrupting_history(ses
 def test_evaluation_thresholds_are_stored_and_listed(session_factory):
     model_id, version_ids = create_model_and_versions(session_factory)
     with session_factory() as session:
-        passing = evaluations.record_evaluation(
+        policy = evaluations.create_evaluation_policy(
             model_id,
-            1,
-            EvaluationCreate(
-                metrics={"auc": 0.91, "loss": 0.12},
+            EvaluationPolicyCreate(
+                name="quality",
+                environment="production",
+                version=1,
                 thresholds={"auc": {"operator": "gte", "value": 0.9}},
             ),
             session,
+            Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
         )
-        failing = evaluations.record_evaluation(
+        passing = evaluations.record_policy_evaluation(
             model_id,
             1,
-            EvaluationCreate(
-                metrics={"auc": 0.81},
-                thresholds={"auc": {"operator": "gte", "value": 0.9}},
+            EvaluationCreateV2(
+                dataset_name="fraud-validation",
+                dataset_version="2026-10",
+                dataset_sha256="a" * 64,
+                evaluator_name="classification-metrics",
+                evaluator_version="1.2.0",
+                policy_id=policy.id,
+                metrics={"auc": 0.91, "loss": 0.12},
             ),
             session,
+            Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
+        )
+        failing = evaluations.record_policy_evaluation(
+            model_id,
+            1,
+            EvaluationCreateV2(
+                dataset_name="fraud-validation",
+                dataset_version="2026-10",
+                dataset_sha256="a" * 64,
+                evaluator_name="classification-metrics",
+                evaluator_version="1.2.0",
+                policy_id=policy.id,
+                metrics={"auc": 0.81},
+            ),
+            session,
+            Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
         )
         assert passing.passed is True
         assert failing.passed is False
-        assert len(evaluations.list_evaluations(model_id, 1, session)) == 2
+        assert passing.dataset_name == "fraud-validation"
+        assert passing.dataset_version == "2026-10"
+        assert passing.dataset_sha256 == "a" * 64
+        assert passing.evaluator_name == "classification-metrics"
+        assert passing.evaluator_version == "1.2.0"
+        assert passing.policy_id == policy.id
+        assert passing.policy_name == "quality"
+        assert passing.policy_version == 1
+        assert passing.policy_environment == "production"
+        assert passing.thresholds == {"auc": {"operator": "gte", "value": 0.9}}
+        assert (
+            len(
+                evaluations.list_evaluations(
+                    model_id,
+                    1,
+                    session,
+                    Principal("reader", "user", frozenset({"messqry/evaluation.read"})),
+                )
+            )
+            == 2
+        )
         assert passing.model_version_id == version_ids[0]
 
-        with pytest.raises(ValueError):
-            EvaluationCreate(
-                metrics={"auc": 0.9},
-                thresholds={"accuracy": {"operator": "gte", "value": 0.8}},
+        with pytest.raises(HTTPException) as missing_metric:
+            evaluations.record_policy_evaluation(
+                model_id,
+                1,
+                EvaluationCreateV2(
+                    dataset_name="fraud-validation",
+                    dataset_version="2026-10",
+                    dataset_sha256="a" * 64,
+                    evaluator_name="classification-metrics",
+                    evaluator_version="1.2.0",
+                    policy_id=policy.id,
+                    metrics={"loss": 0.12},
+                ),
+                session,
+                Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
             )
+        assert missing_metric.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
         with pytest.raises(HTTPException) as missing_version:
-            evaluations.list_evaluations(model_id, 99, session)
+            evaluations.list_evaluations(
+                model_id,
+                99,
+                session,
+                Principal("reader", "user", frozenset({"messqry/evaluation.read"})),
+            )
         assert missing_version.value.status_code == status.HTTP_404_NOT_FOUND
 
         assert session.scalar(select(ModelEvaluation).where(ModelEvaluation.id == passing.id))
         assert session.get(RegisteredModel, model_id)
         assert session.get(ModelVersion, version_ids[1])
+
+
+def test_evaluation_provenance_is_required_and_validated():
+    base = {
+        "dataset_name": "validation",
+        "dataset_version": "v1",
+        "dataset_sha256": "b" * 64,
+        "evaluator_name": "accuracy",
+        "evaluator_version": "1.0",
+        "policy_id": "14ef3912-3d4b-45ad-ab5b-e3c55ee13dad",
+        "metrics": {"accuracy": 0.95},
+    }
+    assert EvaluationCreateV2(**base).dataset_sha256 == "b" * 64
+    assert EvaluationCreateV2(**{**base, "dataset_sha256": "B" * 64}).dataset_sha256 == "b" * 64
+    with pytest.raises(ValueError):
+        EvaluationCreateV2(**{**base, "dataset_sha256": "not-a-checksum"})
+    with pytest.raises(ValueError):
+        EvaluationCreateV2(**{**base, "evaluator_version": "  "})
+
+
+def test_v1_evaluation_payload_remains_backward_compatible(session_factory):
+    model_id, version_ids = create_model_and_versions(session_factory)
+    legacy_payload = EvaluationCreate(
+        metrics={"accuracy": 0.94},
+        thresholds={"accuracy": {"operator": "gte", "value": 0.9}},
+    )
+    with session_factory() as session:
+        evaluation = evaluations.record_evaluation(
+            model_id,
+            1,
+            legacy_payload,
+            session,
+            Principal("legacy-client", "user", frozenset({"messqry/evaluation.write"})),
+        )
+        assert evaluation.model_version_id == version_ids[0]
+        assert evaluation.passed is True
+        assert evaluation.thresholds == {"accuracy": {"operator": "gte", "value": 0.9}}
+        assert evaluation.dataset_name is None
+        assert evaluation.policy_id is None
+        serialized = EvaluationReadV1.model_validate(evaluation).model_dump()
+        assert set(serialized) == {
+            "id",
+            "model_version_id",
+            "metrics",
+            "thresholds",
+            "passed",
+            "created_at",
+        }
+
+
+def test_evaluation_policies_are_versioned_scoped_and_immutable(session_factory):
+    model_id, _ = create_model_and_versions(session_factory)
+    principal = Principal("policy-admin", "user", frozenset({"messqry/evaluation.write"}))
+    with session_factory() as session:
+        first = evaluations.create_evaluation_policy(
+            model_id,
+            EvaluationPolicyCreate(
+                name="quality gate",
+                environment="production",
+                version=1,
+                thresholds={"auc": {"operator": "gte", "value": 0.9}},
+            ),
+            session,
+            principal,
+        )
+        second = evaluations.create_evaluation_policy(
+            model_id,
+            EvaluationPolicyCreate(
+                name="quality gate",
+                environment="production",
+                version=2,
+                thresholds={"auc": {"operator": "gte", "value": 0.95}},
+            ),
+            session,
+            principal,
+        )
+        listed = evaluations.list_evaluation_policies(
+            model_id,
+            "production",
+            session,
+            Principal("policy-reader", "user", frozenset({"messqry/evaluation.read"})),
+        )
+        assert [policy.version for policy in listed] == [2, 1]
+        assert first.id != second.id
+
+        with pytest.raises(HTTPException) as duplicate:
+            evaluations.create_evaluation_policy(
+                model_id,
+                EvaluationPolicyCreate(
+                    name="quality gate",
+                    environment="production",
+                    version=2,
+                    thresholds={"auc": {"operator": "gte", "value": 0.99}},
+                ),
+                session,
+                principal,
+            )
+        assert duplicate.value.status_code == HTTPStatus.CONFLICT
+
+        max_version = EvaluationPolicyCreate(
+            name="integer-boundary",
+            environment="production",
+            version=2_147_483_647,
+            thresholds={"auc": {"operator": "gte", "value": 0.9}},
+        )
+        assert max_version.version == 2_147_483_647
+        with pytest.raises(ValueError):
+            EvaluationPolicyCreate(
+                name="too-large",
+                environment="production",
+                version=2**80,
+                thresholds={"auc": {"operator": "gte", "value": 0.9}},
+            )
+
+        stored = session.get(EvaluationPolicy, first.id)
+        stored.thresholds = {"auc": {"operator": "gte", "value": 0.1}}
+        with pytest.raises(ValueError, match="immutable"):
+            session.commit()
+        session.rollback()

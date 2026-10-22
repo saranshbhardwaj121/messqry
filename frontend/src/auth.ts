@@ -34,7 +34,7 @@ const config: CognitoConfig | null = (() => {
     logoutUri,
     scopes: (
       env.VITE_COGNITO_SCOPES ??
-      "openid email profile messqry/registry.read messqry/registry.write messqry/deployment.read messqry/deployment.write messqry/prediction.invoke"
+      "openid email profile messqry/registry.read messqry/registry.write messqry/deployment.read messqry/deployment.write messqry/prediction.invoke messqry/evaluation.read messqry/evaluation.write"
     )
       .split(/[ ,]+/)
       .map((scope: string) => scope.trim())

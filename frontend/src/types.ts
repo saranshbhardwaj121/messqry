@@ -45,4 +45,13 @@ export type Evaluation = {
   passed: boolean;
   metrics: Record<string, number>;
   created_at: string;
+  dataset_name?: string | null;
+  dataset_version?: string | null;
+  dataset_sha256?: string | null;
+  evaluator_name?: string | null;
+  evaluator_version?: string | null;
+  policy_id?: string | null;
+  policy_name?: string | null;
+  policy_version?: number | null;
+  policy_environment?: string | null;
 };

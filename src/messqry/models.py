@@ -202,7 +202,61 @@ class ModelEvaluation(Base):
     model_version_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("model_versions.id", ondelete="CASCADE"), index=True
     )
+    # Nullable for records created before provenance became part of the evaluation contract.
+    dataset_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dataset_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dataset_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evaluator_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evaluator_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    policy_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evaluation_policies.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    policy_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
     metrics: Mapped[dict[str, float]] = mapped_column(JSON)
     thresholds: Mapped[dict[str, dict[str, Any]]] = mapped_column(JSON)
     passed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvaluationPolicy(Base):
+    """Immutable, versioned threshold rules for one model/environment."""
+
+    __tablename__ = "evaluation_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_id", "environment", "name", "version", name="uq_evaluation_policy_version"
+        ),
+        CheckConstraint(
+            "version >= 1 AND version <= 2147483647",
+            name="ck_evaluation_policy_version_range",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    model_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("models.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    environment: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    thresholds: Mapped[dict[str, dict[str, Any]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+@event.listens_for(EvaluationPolicy, "before_update")
+def prevent_evaluation_policy_update(mapper, connection, target: EvaluationPolicy) -> None:
+    """Keep a published evaluation policy version immutable."""
+
+    raise ValueError("Evaluation policies are immutable; create a new version instead")
+
+
+@event.listens_for(EvaluationPolicy, "before_delete")
+def prevent_evaluation_policy_delete(mapper, connection, target: EvaluationPolicy) -> None:
+    """Keep policy versions available for historical evaluation records."""
+
+    raise ValueError("Evaluation policies cannot be deleted")

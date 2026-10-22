@@ -45,7 +45,8 @@ repository [README](../README.md#current-api). The OpenAPI document at
 
 Current v1 list responses are unpaginated. Registry routes require registry
 scopes, deployment list/history/change routes require deployment read/write
-scopes, and prediction requires `messqry/prediction.invoke`. The prediction
+scopes, evaluation list/create routes require evaluation read/write scopes,
+and prediction requires `messqry/prediction.invoke`. The prediction
 route is `POST /api/v1/models/{model_id}/deployments/{environment}/predict`.
 It accepts 1–1,000 homogeneous JSON records within a 1 MiB request body and
 returns one prediction per record, tagged with the active model version. Only
@@ -54,8 +55,28 @@ private ECS task and a 30-second timeout; the control plane never loads model
 code. See [SERVING_CONTRACT.md](SERVING_CONTRACT.md) for the full payload and
 runtime response contract. The frontend includes Cognito authorization-code
 sign-in with PKCE and attaches the access token to API calls when configured;
-live Cognito setup is unverified. Evaluation routes remain unauthenticated, so
-the API is not ready for production exposure.
+live Cognito setup is unverified. Evaluation endpoints use separate read/write
+scopes, with their Cognito resource-server configuration still pending.
+
+The existing `/api/v1/models/{model_id}/versions/{version_number}/evaluations`
+contract remains stable: POST accepts caller-supplied `metrics` and
+`thresholds`, and v1 responses retain their original fields. The
+provenance- and policy-backed POST contract is available at
+`POST /api/v2/models/{model_id}/versions/{version_number}/evaluations`.
+`POST /api/v1/models/{model_id}/evaluation-policies` creates an immutable policy
+version with a name, target environment, explicit metric operators, and
+threshold values. `GET` on that path lists versions, optionally filtered by
+`environment`. Reusing the same model/environment/name/version returns 409.
+Policy `version` must be between 1 and 2,147,483,647 inclusive.
+The v2 evaluation request requires `dataset_name`, `dataset_version`, a 64-character
+SHA-256 `dataset_sha256`, `evaluator_name`, `evaluator_version`, the `policy_id`,
+and caller-supplied `metrics`. The API applies the stored policy thresholds and
+copies them into the evaluation record with the policy identity/version. The
+checksum is caller-declared and identifies the dataset bytes the evaluator
+claims to have used; the API cannot verify it because dataset ingestion is not
+implemented. It also does not execute the dataset or independently reproduce
+metric computation. Historical records created before provenance and policy
+linkage were introduced return null for those fields.
 
 For an existing model with no deployment selected in an environment, deployment
 history returns an empty array. A nonexistent model returns 404.

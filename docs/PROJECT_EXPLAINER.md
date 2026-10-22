@@ -107,9 +107,9 @@ The database and object store are separate systems, so this cleanup is a compens
 
 ### Step C — check quality
 
-Today a caller submits numeric metrics and thresholds. The API compares them and records a pass/fail result. For example, supplied accuracy `0.94` meets a supplied minimum of `0.90`.
+Today an authorized caller creates an immutable, versioned threshold policy for a model and environment, then submits numeric metrics with a selected policy ID. The API compares the metrics to the stored rules and records a pass/fail result. For example, supplied accuracy `0.94` meets a stored minimum of `0.90`.
 
-The API does not currently calculate that accuracy, run a benchmark dataset, or establish that the supplied result is trustworthy. Phase 4 adds dataset and evaluator versions, reproducibility, and policies that gate production promotion.
+The API does not currently calculate that accuracy, run a benchmark dataset, or establish that the supplied result is trustworthy. Dataset/evaluator provenance and immutable policy versions are recorded, but dataset checksums remain caller-declared. Remaining Phase 4 work adds reproducible metric execution and policies that gate production promotion.
 
 ### Step D — choose an environment and deploy
 
@@ -207,7 +207,7 @@ Think of the database as a library catalog and object storage as the shelves hol
 | SQLite | A small local database stored in a file | Default for development and disposable tests. |
 | PostgreSQL | The selected database for staging/production metadata and concurrent operations | Required by shared-environment settings; production operation unverified. |
 | psycopg 3 | The driver SQLAlchemy uses to speak to PostgreSQL | Optional `[postgres]` dependency; URL begins `postgresql+psycopg://`. |
-| Alembic | Version-controls changes to database structure | Migrations 0001–0005 introduce the registry, deployment history, evaluations, deployment revision, and artifact metadata. |
+| Alembic | Version-controls changes to database structure | Migrations 0001–0009 introduce the registry, deployment history, evaluations, deployment revision, artifact metadata, deployment idempotency, evaluation provenance, and versioned evaluation policies. |
 | Local filesystem adapter | Stores artifacts without an AWS account during development | Implemented under the ignored local artifacts directory. |
 | Amazon S3 adapter | Stores model ZIPs in private cloud object storage | Implemented in code using optional `[aws]` dependencies; actual bucket integration unverified. |
 | Boto3 | The Python AWS SDK used for S3 operations | Upload, open/download, and cleanup/delete operations. |
@@ -273,7 +273,7 @@ Human login and service credentials are distinct: a person signs in through the 
 
 Development has an explicit local registry bypass. Settings reject that bypass outside development. Staging/production also require PostgreSQL, S3 configuration, and identity configuration. Requiring configuration does not verify that those services exist or are reachable.
 
-Deployment and evaluation APIs still lack authorization. Prediction requires its own future scope; registry permissions must not automatically grant inference access. Model/environment authorization and actor-aware audit records remain Phase 3 work.
+Deployment and evaluation APIs require distinct workspace-wide scopes. Prediction also requires its own scope; registry permissions do not grant inference access. Per-model/environment authorization and actor-aware audit records remain outstanding work.
 
 The first release has no shared-tenant isolation. One organization's deployment must not be advertised as a multi-tenant SaaS security boundary.
 
@@ -393,6 +393,14 @@ Some Windows async/TestClient checks have documented limitations. Many backend t
 Phase 6 must add infrastructure as code, pinned/scanned container builds, managed secrets, backup/recovery controls, and delivery ordering. A controlled release must handle migrations, application/runtime compatibility, health gates, and rollback artifacts. Frontend delivery also needs safe caching and browser security headers.
 
 ## 13. Decisions taken, defaults, and decisions still needed
+
+For a beginner-friendly explanation of AWS compute, database hosting,
+networking, roles, and the terms used in this repository, see the
+[AWS glossary](AWS_GLOSSARY.md). In particular, PostgreSQL is the selected
+database engine for shared environments, but Amazon RDS is only a recommended
+hosting option; it has not been selected or provisioned. ECS/Fargate is the
+selected way to run isolated model containers, while the API's own hosting
+service remains undecided.
 
 ### Selected direction or implemented choices
 

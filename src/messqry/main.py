@@ -13,7 +13,9 @@ from messqry.api.errors import (
     request_validation_handler,
     unhandled_exception_handler,
 )
+from messqry.api.evaluations import policy_router as evaluation_policies_router
 from messqry.api.evaluations import router as evaluations_router
+from messqry.api.evaluations import v2_router as evaluations_v2_router
 from messqry.api.middleware import ArtifactUploadBodyLimitMiddleware
 from messqry.api.routes import models_router, router
 from messqry.artifact_storage import create_artifact_store
@@ -64,6 +66,8 @@ app.include_router(router)
 app.include_router(models_router)
 app.include_router(deployments_router)
 app.include_router(evaluations_router)
+app.include_router(evaluation_policies_router)
+app.include_router(evaluations_v2_router)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)

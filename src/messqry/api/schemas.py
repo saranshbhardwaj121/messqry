@@ -141,7 +141,49 @@ class MetricThreshold(BaseModel):
     value: FiniteFloat
 
 
+class EvaluationPolicyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    environment: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    version: int = Field(ge=1, le=2_147_483_647)
+    thresholds: dict[str, MetricThreshold] = Field(min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_policy_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("Policy name must not be blank")
+        return name
+
+    @field_validator("thresholds")
+    @classmethod
+    def validate_policy_metric_names(cls, value):
+        cleaned = {}
+        for key, threshold in value.items():
+            name = key.strip()
+            if not name or len(name) > 100:
+                raise ValueError("Metric names must contain 1 to 100 non-whitespace characters")
+            if name in cleaned:
+                raise ValueError("Metric names must be unique after trimming whitespace")
+            cleaned[name] = threshold
+        return cleaned
+
+
+class EvaluationPolicyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    model_id: UUID
+    name: str
+    environment: str
+    version: int
+    thresholds: dict[str, MetricThreshold]
+    created_at: datetime
+
+
 class EvaluationCreate(BaseModel):
+    """Original v1 evaluation request; kept stable for existing clients."""
+
     metrics: dict[str, FiniteFloat] = Field(min_length=1)
     thresholds: dict[str, MetricThreshold] = Field(min_length=1)
 
@@ -167,7 +209,67 @@ class EvaluationCreate(BaseModel):
         return self
 
 
+class EvaluationCreateV2(BaseModel):
+    """Provenance and policy-backed evaluation request introduced in v2."""
+
+    dataset_name: str = Field(min_length=1, max_length=128)
+    dataset_version: str = Field(min_length=1, max_length=128)
+    dataset_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    evaluator_name: str = Field(min_length=1, max_length=128)
+    evaluator_version: str = Field(min_length=1, max_length=128)
+    policy_id: UUID
+    metrics: dict[str, FiniteFloat] = Field(min_length=1)
+
+    @field_validator("dataset_name", "dataset_version", "evaluator_name", "evaluator_version")
+    @classmethod
+    def validate_provenance_label(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Evaluation provenance labels must not be blank")
+        return cleaned
+
+    @field_validator("dataset_sha256")
+    @classmethod
+    def normalize_dataset_checksum(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("metrics")
+    @classmethod
+    def validate_metric_names(cls, value):
+        cleaned = {}
+        for key, metric_value in value.items():
+            name = key.strip()
+            if not name or len(name) > 100:
+                raise ValueError("Metric names must contain 1 to 100 non-whitespace characters")
+            if name in cleaned:
+                raise ValueError("Metric names must be unique after trimming whitespace")
+            cleaned[name] = metric_value
+        return cleaned
+
+
 class EvaluationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    model_version_id: UUID
+    dataset_name: str | None
+    dataset_version: str | None
+    dataset_sha256: str | None
+    evaluator_name: str | None
+    evaluator_version: str | None
+    policy_id: UUID | None
+    policy_name: str | None
+    policy_version: int | None
+    policy_environment: str | None
+    metrics: dict[str, FiniteFloat]
+    thresholds: dict[str, MetricThreshold]
+    passed: bool
+    created_at: datetime
+
+
+class EvaluationReadV1(BaseModel):
+    """Stable response schema for legacy v1 evaluation clients."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

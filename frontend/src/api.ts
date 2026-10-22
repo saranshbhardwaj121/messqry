@@ -3,20 +3,27 @@ import { authorizedFetch } from "./auth";
 
 const apiRoot = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
+class ApiResponseError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiResponseError";
+  }
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await authorizedFetch(`${apiRoot}${path}`, { headers: { Accept: "application/json" } });
   if (!response.ok) throw await responseError(response);
   return (await response.json()) as T;
 }
 
-async function responseError(response: Response): Promise<Error> {
+async function responseError(response: Response): Promise<ApiResponseError> {
   try {
     const payload = (await response.json()) as { error?: { message?: string } };
-    if (payload.error?.message) return new Error(payload.error.message);
+    if (payload.error?.message) return new ApiResponseError(payload.error.message, response.status);
   } catch {
     // Keep a stable status message when the response body is not JSON.
   }
-  return new Error(`Request failed (${response.status})`);
+  return new ApiResponseError(`Request failed (${response.status})`, response.status);
 }
 
 async function changeDeployment(
@@ -106,7 +113,7 @@ export type OverviewData = {
     time: string;
     status: "success" | "failure" | "neutral";
   }>;
-  evaluationCount: number;
+  evaluationCount: number | null;
 };
 
 export function normalizeApiTimestamp(value: string): string {
@@ -130,13 +137,18 @@ export async function loadOverview(): Promise<OverviewData> {
     ),
   );
   const versions = details.flatMap((model) => model.versions ?? []);
-  const evaluations = await Promise.all(
+  const evaluationResults = await Promise.all(
     versions.map((version) =>
       getJson<Evaluation[]>(
         `/api/v1/models/${version.model_id}/versions/${version.version}/evaluations`,
-      ),
+      ).catch((error: unknown) => {
+        if (error instanceof ApiResponseError && error.status === 403) return null;
+        throw error;
+      }),
     ),
   );
+  const evaluationsAvailable = evaluationResults.every((result) => result !== null);
+  const evaluations = evaluationsAvailable ? evaluationResults : [];
 
   const modelNames = new Map(details.map((model) => [model.id, model.name]));
   const versionsById = new Map(versions.map((version) => [version.id, version]));
@@ -165,6 +177,8 @@ export async function loadOverview(): Promise<OverviewData> {
     activity: [...deploymentActivity, ...evaluationActivity]
       .sort((left, right) => Date.parse(right.time) - Date.parse(left.time))
       .slice(0, 6),
-    evaluationCount: evaluations.reduce((total, items) => total + items.length, 0),
+    evaluationCount: evaluationsAvailable
+      ? evaluations.reduce((total, items) => total + (items?.length ?? 0), 0)
+      : null,
   };
 }

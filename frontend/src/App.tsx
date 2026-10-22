@@ -217,7 +217,7 @@ function Overview({ data, onNavigate }: { data: OverviewData; onNavigate: (secti
       <section className="metric-grid" aria-label="Workspace summary">
         <MetricCard label="REGISTERED MODELS" value={data.models.length.toString().padStart(2, "0")} note={data.models.length ? "From model registry" : "No models registered"} icon={BrainCircuit} />
         <MetricCard label="DEPLOYMENT SELECTIONS" value={healthy.toString().padStart(2, "0")} note={healthy ? "Version selections recorded" : "No deployment selections"} icon={Rocket} />
-        <MetricCard label="EVALUATION RECORDS" value={data.evaluationCount.toString().padStart(2, "0")} note={data.evaluationCount ? "Recorded metric checks" : "No evaluations recorded"} icon={FlaskConical} />
+        <MetricCard label="EVALUATION RECORDS" value={data.evaluationCount === null ? "—" : data.evaluationCount.toString().padStart(2, "0")} note={data.evaluationCount === null ? "Evaluation access not granted" : data.evaluationCount ? "Recorded metric checks" : "No evaluations recorded"} icon={FlaskConical} />
         <article className="metric-card metric-unavailable"><div className="metric-top"><span>INFERENCE HEALTH</span><ChartNoAxesCombined className="metric-icon" size={19} aria-hidden="true" /></div><div className="metric-value unavailable-value">—</div><div className="metric-note">No serving telemetry source</div></article>
       </section>
       <section className="content-grid content-top"><LifecycleCard /><ActivityPanel items={data.activity} /></section>

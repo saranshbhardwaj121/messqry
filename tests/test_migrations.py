@@ -54,6 +54,7 @@ def test_migrations_upgrade_downgrade_and_upgrade_again(tmp_path):
             "deployment_events",
             "deployment_requests",
             "model_evaluations",
+            "evaluation_policies",
         } <= set(inspector.get_table_names())
         deployment_columns = {column["name"] for column in inspector.get_columns("deployments")}
         assert "revision" in deployment_columns
