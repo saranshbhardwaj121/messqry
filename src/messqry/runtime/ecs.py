@@ -20,6 +20,7 @@ from messqry.runtime.transport import (
 )
 
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+_RUNTIME_TEMP_PATH = "/tmp/messqry"
 logger = logging.getLogger("messqry.runtime.ecs")
 
 
@@ -118,10 +119,16 @@ class EcsFargateRuntime:
                 "ECS model runtime requires a valid deployment revision and environment"
             )
         deadline = self.monotonic() + self.settings.runtime_startup_timeout_seconds
+        task_definition_arn = self._validate_task_definition()
+        if self.monotonic() >= deadline:
+            raise RuntimeLaunchError(
+                "ECS runtime did not start within "
+                f"{self.settings.runtime_startup_timeout_seconds} seconds"
+            )
         try:
             response = self.client.run_task(
                 cluster=self.settings.ecs_cluster.strip(),
-                taskDefinition=self.settings.ecs_task_definition.strip(),
+                taskDefinition=task_definition_arn,
                 count=1,
                 launchType="FARGATE",
                 networkConfiguration={
@@ -415,6 +422,84 @@ class EcsFargateRuntime:
                     f"{self.settings.runtime_startup_timeout_seconds} seconds"
                 )
             self.sleep(min(self.poll_interval_seconds, remaining))
+
+    def _validate_task_definition(self) -> str:
+        """Validate isolation settings and return the inspected immutable revision ARN."""
+        try:
+            response = self.client.describe_task_definition(
+                taskDefinition=self.settings.ecs_task_definition.strip()
+            )
+            definition = response.get("taskDefinition")
+        except Exception as exc:
+            logger.warning("ECS task definition could not be inspected (%s)", type(exc).__name__)
+            raise RuntimeLaunchError("ECS runtime task definition could not be verified") from exc
+
+        if not isinstance(definition, dict):
+            raise RuntimeLaunchError("ECS runtime task definition is invalid")
+        task_definition_arn = definition.get("taskDefinitionArn")
+        if (
+            not isinstance(task_definition_arn, str)
+            or not task_definition_arn
+            or not task_definition_arn.rsplit(":", 1)[-1].isdecimal()
+        ):
+            raise RuntimeLaunchError("ECS runtime task definition revision could not be pinned")
+        compatibilities = definition.get("requiresCompatibilities")
+        if (
+            not isinstance(compatibilities, list)
+            or "FARGATE" not in compatibilities
+            or definition.get("networkMode") != "awsvpc"
+        ):
+            raise RuntimeLaunchError("ECS runtime task definition must use Fargate awsvpc mode")
+
+        volumes = definition.get("volumes")
+        containers = definition.get("containerDefinitions")
+        if not isinstance(volumes, list) or not isinstance(containers, list):
+            raise RuntimeLaunchError("ECS runtime task definition is invalid")
+        volume_by_name = {
+            volume.get("name"): volume
+            for volume in volumes
+            if isinstance(volume, dict) and isinstance(volume.get("name"), str)
+        }
+        container = next(
+            (
+                item
+                for item in containers
+                if isinstance(item, dict)
+                and item.get("name") == self.settings.ecs_container_name.strip()
+            ),
+            None,
+        )
+        if container is None:
+            raise RuntimeLaunchError("ECS runtime container is missing from its task definition")
+        if container.get("privileged", False) is True:
+            raise RuntimeLaunchError("ECS runtime container must not be privileged")
+        if container.get("readonlyRootFilesystem") is not True:
+            raise RuntimeLaunchError("ECS runtime container must use a read-only root filesystem")
+
+        configured_user = container.get("user")
+        ids = configured_user.split(":") if isinstance(configured_user, str) else []
+        if not 1 <= len(ids) <= 2 or any(not value.isdecimal() or int(value) == 0 for value in ids):
+            raise RuntimeLaunchError(
+                "ECS runtime container must explicitly use a non-root numeric user"
+            )
+
+        mount_points = container.get("mountPoints", [])
+        if not isinstance(mount_points, list):
+            raise RuntimeLaunchError("ECS runtime task definition is invalid")
+        temp_mount_is_writable = any(
+            isinstance(mount, dict)
+            and mount.get("containerPath") == _RUNTIME_TEMP_PATH
+            and mount.get("readOnly", False) is False
+            and isinstance(mount.get("sourceVolume"), str)
+            and mount.get("sourceVolume") in volume_by_name
+            and "efsVolumeConfiguration" not in volume_by_name[mount["sourceVolume"]]
+            for mount in mount_points
+        )
+        if not temp_mount_is_writable:
+            raise RuntimeLaunchError(
+                "ECS runtime task definition must mount a writable volume at /tmp/messqry"
+            )
+        return task_definition_arn
 
     def _stop_failed_start(self, task_arn: str) -> None:
         try:

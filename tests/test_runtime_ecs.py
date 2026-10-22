@@ -30,6 +30,32 @@ class FakeEcsClient:
         self.run_request = None
         self.stopped = []
         self.run_calls = 0
+        self.task_definition = {
+            "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/messqry-runtime:1",
+            "requiresCompatibilities": ["FARGATE"],
+            "networkMode": "awsvpc",
+            "volumes": [{"name": "runtime-tmp"}],
+            "containerDefinitions": [
+                {
+                    "name": "model-runtime",
+                    "user": "10001:10001",
+                    "privileged": False,
+                    "readonlyRootFilesystem": True,
+                    "mountPoints": [
+                        {
+                            "sourceVolume": "runtime-tmp",
+                            "containerPath": "/tmp/messqry",
+                            "readOnly": False,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.task_definition_request = None
+
+    def describe_task_definition(self, **request):
+        self.task_definition_request = request
+        return {"taskDefinition": self.task_definition}
 
     def run_task(self, **request):
         self.run_calls += 1
@@ -90,6 +116,8 @@ def test_ecs_task_uses_selected_profile_and_private_network():
     }
     assert request["overrides"]["cpu"] == "1024"
     assert request["overrides"]["memory"] == "2048"
+    assert client.task_definition_request == {"taskDefinition": "messqry-runtime:1"}
+    assert request["taskDefinition"] == client.task_definition["taskDefinitionArn"]
     assert "ephemeralStorage" not in request["overrides"]
     assert request["enableECSManagedTags"] is True
     assert {entry["key"]: entry["value"] for entry in request["tags"]} == {
@@ -176,6 +204,89 @@ def test_ecs_start_rejects_non_s3_artifact_before_launch():
             artifact_sha256="not-a-digest",
         )
     assert client.run_request is None
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda definition: definition.update(networkMode="bridge"), "Fargate awsvpc"),
+        (
+            lambda definition: definition["containerDefinitions"][0].update(privileged=True),
+            "must not be privileged",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0].update(
+                readonlyRootFilesystem=False
+            ),
+            "read-only root filesystem",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0].update(user="0:0"),
+            "non-root numeric user",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0].pop("user"),
+            "explicitly use a non-root numeric user",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0].update(user="messqry"),
+            "explicitly use a non-root numeric user",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0].update(mountPoints=[]),
+            "writable volume at /tmp/messqry",
+        ),
+        (
+            lambda definition: definition["containerDefinitions"][0]["mountPoints"][0].update(
+                readOnly=True
+            ),
+            "writable volume at /tmp/messqry",
+        ),
+        (
+            lambda definition: definition["volumes"][0].update(
+                efsVolumeConfiguration={"fileSystemId": "fs-example"}
+            ),
+            "writable volume at /tmp/messqry",
+        ),
+    ],
+)
+def test_ecs_rejects_task_definition_without_runtime_isolation(change, message):
+    client = FakeEcsClient([running_task()])
+    change(client.task_definition)
+    runtime = EcsFargateRuntime(ecs_settings(), client=client, health_probe=lambda *_: True)
+
+    with pytest.raises(RuntimeLaunchError, match=message):
+        runtime.start(
+            deployment_id="deployment-1",
+            deployment_revision=3,
+            environment="staging",
+            model_id="model-1",
+            model_version_id="version-2",
+            artifact_uri="s3://messqry-private-artifacts/models/model-1/version-2.zip",
+            artifact_sha256="a" * 64,
+        )
+
+    assert client.run_calls == 0
+
+
+@pytest.mark.parametrize("task_definition_arn", [None, "messqry-runtime"])
+def test_ecs_rejects_task_definition_without_pinnable_revision(task_definition_arn):
+    client = FakeEcsClient([running_task()])
+    client.task_definition["taskDefinitionArn"] = task_definition_arn
+    runtime = EcsFargateRuntime(ecs_settings(), client=client, health_probe=lambda *_: True)
+
+    with pytest.raises(RuntimeLaunchError, match="revision could not be pinned"):
+        runtime.start(
+            deployment_id="deployment-1",
+            deployment_revision=3,
+            environment="staging",
+            model_id="model-1",
+            model_version_id="version-2",
+            artifact_uri="s3://messqry-private-artifacts/models/model-1/version-2.zip",
+            artifact_sha256="a" * 64,
+        )
+
+    assert client.run_calls == 0
 
 
 def test_ecs_stopped_task_fails_start_and_attempts_cleanup():

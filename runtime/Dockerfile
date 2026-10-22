@@ -16,6 +16,8 @@ RUN python -m pip install ".[runtime]" \
     && mkdir -p /tmp/messqry \
     && chown 10001:10001 /tmp/messqry
 
+VOLUME ["/tmp/messqry"]
+
 ENV TMPDIR=/tmp/messqry
 
 USER 10001:10001
