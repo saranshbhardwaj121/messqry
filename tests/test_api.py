@@ -30,6 +30,8 @@ from messqry.models import (
     ModelVersion,
     RegisteredModel,
 )
+from messqry.runtime.ecs import RuntimeLaunchError
+from messqry.runtime.transport import RuntimeTransportError
 
 
 def valid_pyfunc_package() -> bytes:
@@ -163,6 +165,90 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
     assert runtime.request["model_version"] == version_number
     assert runtime.request["artifact_version_id"] is None
     assert runtime.request["payload"] == {"inputs": [{"feature": 1}]}
+    del app.state.runtime_manager
+
+
+@pytest.mark.parametrize(
+    ("runtime_error", "expected_status"),
+    [
+        (RuntimeLaunchError("startup failed"), status.HTTP_503_SERVICE_UNAVAILABLE),
+        (
+            RuntimeTransportError("response timed out", timed_out=True),
+            status.HTTP_504_GATEWAY_TIMEOUT,
+        ),
+        (RuntimeTransportError("runtime unavailable"), status.HTTP_503_SERVICE_UNAVAILABLE),
+        (RuntimeTransportError("invalid runtime response"), status.HTTP_502_BAD_GATEWAY),
+    ],
+)
+def test_prediction_route_maps_runtime_failures_and_releases_session(
+    session_factory, runtime_error, expected_status
+):
+    with session_factory() as session:
+        model = routes.create_model(ModelCreate(name="runtime-failure-model"), session)
+        version = ModelVersion(
+            model_id=model.id,
+            version=1,
+            artifact_uri="s3://private-bucket/model.zip",
+            package_format="mlflow_pyfunc",
+            artifact_sha256="b" * 64,
+            validation_status="validated",
+        )
+        session.add(version)
+        session.commit()
+        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+
+        class FailedRuntime:
+            def predict(self, **_kwargs):
+                assert not session.in_transaction()
+                raise runtime_error
+
+        app.state.runtime_manager = FailedRuntime()
+        request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
+        with pytest.raises(HTTPException) as rejected:
+            deployments.predict(
+                model.id,
+                "production",
+                PredictionRequest(inputs=[{"feature": 1}]),
+                request,
+                session,
+                Principal("test-user", "user", frozenset({"messqry/prediction.invoke"})),
+            )
+        assert not session.in_transaction()
+    assert rejected.value.status_code == expected_status
+    del app.state.runtime_manager
+
+
+def test_oversized_prediction_is_rejected_before_runtime_call(session_factory):
+    with session_factory() as session:
+        model = routes.create_model(ModelCreate(name="oversized-prediction-model"), session)
+        version = ModelVersion(
+            model_id=model.id,
+            version=1,
+            artifact_uri="s3://private-bucket/model.zip",
+            package_format="mlflow_pyfunc",
+            artifact_sha256="c" * 64,
+            validation_status="validated",
+        )
+        session.add(version)
+        session.commit()
+        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+
+        class RuntimeMustNotRun:
+            def predict(self, **_kwargs):
+                pytest.fail("oversized payload reached the model runtime")
+
+        app.state.runtime_manager = RuntimeMustNotRun()
+        request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
+        with pytest.raises(HTTPException) as rejected:
+            deployments.predict(
+                model.id,
+                "production",
+                PredictionRequest(inputs=[{"text": "漢" * 400_000}]),
+                request,
+                session,
+                Principal("test-user", "user", frozenset({"messqry/prediction.invoke"})),
+            )
+        assert rejected.value.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
     del app.state.runtime_manager
 
 

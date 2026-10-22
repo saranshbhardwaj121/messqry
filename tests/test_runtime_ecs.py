@@ -5,6 +5,7 @@ import pytest
 
 from messqry.config import Settings
 from messqry.runtime.ecs import EcsFargateRuntime, RuntimeLaunchError, RuntimeTask
+from messqry.runtime.transport import RuntimeTransportError
 
 
 def ecs_settings(**overrides):
@@ -351,6 +352,56 @@ def test_runtime_starts_new_task_for_new_deployment_revision():
     assert runtime.predict(deployment_revision=3, **common) == "10.0.1.17"
     assert runtime.predict(deployment_revision=4, **common) == "10.0.1.18"
     assert client.run_calls == 2
+
+
+def test_prediction_transport_failure_stops_task_and_next_request_restarts():
+    client = FakeEcsClient([])
+    runtime = EcsFargateRuntime(
+        ecs_settings(),
+        client=client,
+        timer_factory=lambda *_args, **_kwargs: FakeTimer(1, lambda: None, args=()),
+    )
+    starts = []
+    outcomes = iter([RuntimeTransportError("injected response failure"), "recovered"])
+
+    def controlled_start(**_kwargs):
+        task = RuntimeTask(task_arn=f"task-{len(starts) + 1}", private_ip="10.0.1.17")
+        starts.append(task)
+        return task
+
+    def controlled_transport(*_args, **_kwargs):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    runtime.start = controlled_start
+    runtime.prediction_transport = controlled_transport
+    params = {
+        "deployment_id": "deployment-1",
+        "deployment_revision": 3,
+        "environment": "production",
+        "model_id": "model-1",
+        "model_version_id": "version-2",
+        "model_version": 2,
+        "artifact_uri": "s3://messqry-private-artifacts/models/model-1/version-2.zip",
+        "artifact_sha256": "a" * 64,
+        "payload": {"inputs": [{"feature": 1}]},
+    }
+
+    with pytest.raises(RuntimeTransportError, match="injected response failure"):
+        runtime.predict(**params)
+
+    assert len(starts) == 1
+    assert client.stopped == [
+        {
+            "cluster": "messqry-cluster",
+            "task": "task-1",
+            "reason": "MessQry runtime idle timeout",
+        }
+    ]
+    assert runtime.predict(**params) == "recovered"
+    assert [task.task_arn for task in starts] == ["task-1", "task-2"]
 
 
 def test_cold_start_for_one_deployment_does_not_block_another_warm_task():
