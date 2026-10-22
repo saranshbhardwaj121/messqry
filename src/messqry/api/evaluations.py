@@ -207,6 +207,26 @@ def record_policy_evaluation(
     return evaluation
 
 
+@v2_router.get("", response_model=list[EvaluationRead])
+def list_policy_evaluations(
+    model_id: UUID,
+    version_number: int,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_scope("messqry/evaluation.read")),
+) -> list[ModelEvaluation]:
+    """List policy-backed evaluations with provenance and threshold snapshots."""
+
+    del principal
+    version = _get_version(session, model_id, version_number)
+    return list(
+        session.scalars(
+            select(ModelEvaluation)
+            .where(ModelEvaluation.model_version_id == version.id)
+            .order_by(ModelEvaluation.created_at.desc(), ModelEvaluation.id.desc())
+        )
+    )
+
+
 @router.get("", response_model=list[EvaluationReadV1])
 def list_evaluations(
     model_id: UUID,

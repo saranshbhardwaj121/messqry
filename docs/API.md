@@ -74,6 +74,9 @@ contract remains stable: POST accepts caller-supplied `metrics` and
 `thresholds`, and v1 responses retain their original fields. The
 provenance- and policy-backed POST contract is available at
 `POST /api/v2/models/{model_id}/versions/{version_number}/evaluations`.
+The corresponding v2 `GET` route lists full evaluation provenance and stored
+threshold snapshots for that model version; the v1 `GET` response remains
+unchanged for existing clients.
 `POST /api/v1/models/{model_id}/evaluation-policies` creates an immutable policy
 version with a name, target environment, explicit metric operators, and
 threshold values. `GET` on that path lists versions, optionally filtered by

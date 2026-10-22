@@ -227,6 +227,61 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
 .registry-state p { margin: 0; color: var(--muted); font-size: 12px; }
 .registry-state[role="alert"] { color: var(--failure); }
 .registry-state .spinner { display: block; }
+.registry-state label { display: grid; gap: 6px; width: min(100%, 320px); color: #d2d6d8; font-size: 12px; text-align: left; }
+.registry-state select { padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: #0b0d0f; color: var(--text); }
+.evaluations-page h2 { margin: 4px 0 0; font-size: 16px; font-weight: 570; }
+.evaluation-target { padding: 15px 16px; }
+.evaluation-eligibility { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; }
+.evaluation-eligibility h2 { margin-top: 4px; }
+.evaluation-eligibility p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.eligibility-icon { display: grid; flex: 0 0 34px; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 7px; }
+.evaluation-eligibility.eligible .eligibility-icon { border-color: rgb(112 196 155 / 35%); color: var(--success); }
+.evaluation-eligibility.blocked .eligibility-icon { border-color: rgb(226 123 119 / 35%); color: var(--failure); }
+.evaluation-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr); align-items: start; gap: 12px; }
+.evaluation-main, .evaluation-forms { display: grid; min-width: 0; gap: 12px; }
+.evaluation-policy-panel, .evaluation-comparison, .evaluation-records, .evaluation-form-panel { min-width: 0; padding: 15px 16px; }
+.evaluation-policy-list { display: grid; margin: 12px 0 0; padding: 0; list-style: none; }
+.evaluation-policy-list li { padding: 10px 0; border-top: 1px solid rgb(255 255 255 / 12%); }
+.policy-row-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.policy-row-title > strong { min-width: 0; font-size: 12px; font-weight: 570; }
+.policy-row-title > strong span { color: var(--muted); font: 10px var(--mono); }
+.threshold-list, .threshold-results { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 7px; color: #c7ccd0; font-size: 11px; }
+.threshold-list code, .threshold-results code, .evaluation-checksum { color: #d5a27f; font: 10px var(--mono); }
+.evaluation-footnote, .evaluation-help { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.evaluation-footnote { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--border); }
+.evaluation-comparison .panel-heading { align-items: flex-end; }
+.compact-select { display: grid; gap: 4px; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+.compact-select select { max-width: 200px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: #0b0d0f; color: var(--text); font: 11px Inter, ui-sans-serif, system-ui, sans-serif; text-transform: none; }
+.evaluation-table-wrap { overflow-x: auto; margin-top: 12px; }
+.evaluation-table { width: 100%; border-collapse: collapse; text-align: left; }
+.evaluation-table th, .evaluation-table td { padding: 9px 8px; border-top: 1px solid rgb(255 255 255 / 12%); color: #d3d7da; font-size: 11px; vertical-align: middle; }
+.evaluation-table thead th { color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.evaluation-table tbody th { white-space: nowrap; }
+.evaluation-record-list { display: grid; margin: 12px 0 0; padding: 0; list-style: none; }
+.evaluation-record-list > li { display: flex; align-items: flex-start; gap: 9px; padding: 11px 0; border-top: 1px solid rgb(255 255 255 / 12%); }
+.evaluation-record-mark { display: grid; flex: 0 0 26px; place-items: center; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 6px; }
+.evaluation-record-mark.success { color: var(--success); }
+.evaluation-record-mark.failure { color: var(--failure); }
+.evaluation-record-content { display: grid; flex: 1; min-width: 0; gap: 5px; }
+.evaluation-provenance { color: #c2c7ca; font-size: 11px; line-height: 1.4; }
+.evaluation-checksum { overflow-wrap: anywhere; }
+.evaluation-record-content time { color: var(--muted); font: 10px var(--mono); }
+.evaluation-form-panel .panel-heading { margin-bottom: 7px; }
+.evaluation-form-panel .panel-heading > svg { color: #c2c7ca; }
+.evaluation-help { margin: 0 0 11px; }
+.evaluation-form { display: grid; gap: 10px; }
+.evaluation-form label { display: grid; gap: 5px; color: #d2d6d8; font-size: 11px; font-weight: 550; }
+.evaluation-form input, .evaluation-form select, .evaluation-form textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: #0b0d0f; color: var(--text); font: inherit; font-size: 12px; }
+.evaluation-form textarea { resize: vertical; font-family: var(--mono); font-size: 11px; line-height: 1.5; }
+.evaluation-form input:focus, .evaluation-form select:focus, .evaluation-form textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.evaluation-form > .button-primary, .evaluation-form > .button-secondary { justify-self: start; margin-top: 2px; }
+.evaluation-fields-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.create-policy-panel summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+.create-policy-panel summary::-webkit-details-marker { display: none; }
+.create-policy-panel summary > span { display: grid; gap: 4px; }
+.create-policy-panel summary strong { font-size: 14px; font-weight: 560; }
+.create-policy-panel[open] summary { margin-bottom: 12px; }
+.create-policy-panel summary > svg { color: var(--primary); }
 .deployment-workspace { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(290px, .8fr); align-items: start; gap: 12px; }
 .deployment-selection, .deployment-history { min-width: 0; padding: 15px 16px; }
 .deployment-selection h2, .deployment-history h2 { margin: 4px 0 0; font-size: 16px; font-weight: 570; }
@@ -311,6 +366,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
   .registry-page-header > .button-primary { align-self: flex-start; }
   .registry-layout { grid-template-columns: minmax(0, 1fr); }
   .deployment-workspace { grid-template-columns: minmax(0, 1fr); }
+  .evaluation-layout { grid-template-columns: minmax(0, 1fr); }
+  .evaluation-comparison .panel-heading { align-items: flex-start; flex-direction: column; }
   .registry-model-list ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 440px) {

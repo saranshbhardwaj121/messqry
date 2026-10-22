@@ -16,6 +16,7 @@ import {
 import { loadOverview, normalizeApiTimestamp, type OverviewData } from "./api";
 import { ModelsPage } from "./ModelsPage";
 import { DeploymentsPage } from "./DeploymentsPage";
+import { EvaluationsPage } from "./EvaluationsPage";
 import type { Model } from "./types";
 import { AuthScreen } from "./AuthScreen";
 import {
@@ -349,6 +350,11 @@ export default function App() {
             loadError={error}
             onRefresh={() => setRefresh((current) => current + 1)}
           /> : active === "Deployments" ? <DeploymentsPage
+            models={data?.models ?? []}
+            loading={!data && !error}
+            loadError={error}
+            onRefresh={() => setRefresh((current) => current + 1)}
+          /> : active === "Evaluations" ? <EvaluationsPage
             models={data?.models ?? []}
             loading={!data && !error}
             loadError={error}

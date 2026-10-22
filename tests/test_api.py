@@ -172,7 +172,11 @@ def test_health_readiness_and_openapi_contract(session_factory):
     assert required_scopes(evaluation_path, "GET") == {"messqry/evaluation.read"}
     assert required_scopes(evaluation_path, "POST") == {"messqry/evaluation.write"}
     evaluation_v2_path = "/api/v2/models/{model_id}/versions/{version_number}/evaluations"
+    assert app.openapi()["paths"][evaluation_v2_path]["get"]["security"] == [
+        {"HTTPBearer": []}
+    ]
     assert app.openapi()["paths"][evaluation_v2_path]["post"]["security"] == [{"HTTPBearer": []}]
+    assert required_scopes(evaluation_v2_path, "GET") == {"messqry/evaluation.read"}
     assert required_scopes(evaluation_v2_path, "POST") == {"messqry/evaluation.write"}
     policy_path = "/api/v1/models/{model_id}/evaluation-policies"
     assert app.openapi()["paths"][policy_path]["get"]["security"] == [{"HTTPBearer": []}]
@@ -853,6 +857,14 @@ def test_evaluation_thresholds_are_stored_and_listed(session_factory):
             )
             == 3
         )
+        policy_history = evaluations.list_policy_evaluations(
+            model_id,
+            1,
+            session,
+            Principal("reader", "user", frozenset({"messqry/evaluation.read"})),
+        )
+        assert len(policy_history) == 3
+        assert all(record.policy_id == policy.id for record in policy_history)
         assert passing.model_version_id == version_ids[0]
 
         with pytest.raises(HTTPException) as missing_metric:

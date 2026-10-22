@@ -42,8 +42,10 @@ export type DeploymentEvent = {
 
 export type Evaluation = {
   id: string;
+  model_version_id: string;
   passed: boolean;
   metrics: Record<string, number>;
+  thresholds: Record<string, MetricThreshold>;
   created_at: string;
   dataset_name?: string | null;
   dataset_version?: string | null;
@@ -54,4 +56,19 @@ export type Evaluation = {
   policy_name?: string | null;
   policy_version?: number | null;
   policy_environment?: string | null;
+};
+
+export type MetricThreshold = {
+  operator: "gt" | "gte" | "lt" | "lte";
+  value: number;
+};
+
+export type EvaluationPolicy = {
+  id: string;
+  model_id: string;
+  name: string;
+  environment: string;
+  version: number;
+  thresholds: Record<string, MetricThreshold>;
+  created_at: string;
 };

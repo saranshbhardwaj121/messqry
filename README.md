@@ -99,6 +99,7 @@ API compatibility, pagination, and error conventions are documented in
 - `POST /api/v1/models/{model_id}/evaluation-policies` and `GET` on the same path — create immutable threshold-policy versions and list them.
 - `POST /api/v1/models/{model_id}/versions/{version_number}/evaluations` — backward-compatible evaluation using caller-supplied numeric metrics and thresholds.
 - `POST /api/v2/models/{model_id}/versions/{version_number}/evaluations` — record dataset/evaluator provenance and compare supplied numeric metrics against a selected stored policy. Metric computation itself is currently performed by the caller.
+- `GET /api/v2/models/{model_id}/versions/{version_number}/evaluations` — list policy-backed evaluation results with provenance and threshold snapshots.
 - `GET /api/v1/models/{model_id}/versions/{version_number}/evaluations` — list evaluation records for a version.
 - `PUT /api/v1/models/{model_id}/deployments/{environment}` — select a registered version for an environment and record a deployment or promotion.
 - `POST /api/v1/models/{model_id}/deployments/{environment}/rollback` — select a previously registered version and record a rollback. Repeating a request that selects the version already active returns the current deployment without adding a duplicate history event. Deployment and rollback also support request-key idempotency through `Idempotency-Key`; see [API.md](docs/API.md).

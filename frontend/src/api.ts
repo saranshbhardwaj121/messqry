@@ -1,9 +1,9 @@
-import type { Deployment, DeploymentEvent, Evaluation, Model, ModelVersion } from "./types";
+import type { Deployment, DeploymentEvent, Evaluation, EvaluationPolicy, Model, ModelVersion } from "./types";
 import { authorizedFetch } from "./auth";
 
 const apiRoot = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
-class ApiResponseError extends Error {
+export class ApiResponseError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
     this.name = "ApiResponseError";
@@ -14,6 +14,52 @@ async function getJson<T>(path: string): Promise<T> {
   const response = await authorizedFetch(`${apiRoot}${path}`, { headers: { Accept: "application/json" } });
   if (!response.ok) throw await responseError(response);
   return (await response.json()) as T;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await authorizedFetch(`${apiRoot}${path}`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await responseError(response);
+  return (await response.json()) as T;
+}
+
+export function loadEvaluationPolicies(modelId: string): Promise<EvaluationPolicy[]> {
+  return getJson<EvaluationPolicy[]>(`/api/v1/models/${modelId}/evaluation-policies`);
+}
+
+export function createEvaluationPolicy(
+  modelId: string,
+  input: Pick<EvaluationPolicy, "name" | "environment" | "version" | "thresholds">,
+): Promise<EvaluationPolicy> {
+  return postJson<EvaluationPolicy>(`/api/v1/models/${modelId}/evaluation-policies`, input);
+}
+
+export function loadVersionEvaluations(modelId: string, version: number): Promise<Evaluation[]> {
+  return getJson<Evaluation[]>(`/api/v2/models/${modelId}/versions/${version}/evaluations`);
+}
+
+export type PolicyEvaluationInput = {
+  dataset_name: string;
+  dataset_version: string;
+  dataset_sha256: string;
+  evaluator_name: string;
+  evaluator_version: string;
+  policy_id: string;
+  metrics: Record<string, number>;
+};
+
+export function recordPolicyEvaluation(
+  modelId: string,
+  version: number,
+  input: PolicyEvaluationInput,
+): Promise<Evaluation> {
+  return postJson<Evaluation>(
+    `/api/v2/models/${modelId}/versions/${version}/evaluations`,
+    input,
+  );
 }
 
 async function responseError(response: Response): Promise<ApiResponseError> {
