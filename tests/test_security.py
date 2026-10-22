@@ -46,7 +46,7 @@ def test_cognito_access_token_requires_issuer_audience_and_scopes(monkeypatch, s
             "sub": "user-123",
             "token_use": "access",
             "client_id": "web-client",
-            "scope": "messqry/registry.read messqry/deployment.write unrelated/scope",
+            "scope": "messqry/registry.read messqry/deployment.write messqry/evaluation.override unrelated/scope",
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
         },
         private_pem,
@@ -58,7 +58,13 @@ def test_cognito_access_token_requires_issuer_audience_and_scopes(monkeypatch, s
 
     assert principal.subject == "user-123"
     assert principal.kind == "user"
-    assert principal.scopes == frozenset({"messqry/registry.read", "messqry/deployment.write"})
+    assert principal.scopes == frozenset(
+        {
+            "messqry/registry.read",
+            "messqry/deployment.write",
+            "messqry/evaluation.override",
+        }
+    )
 
 
 def test_cognito_machine_client_is_classified_as_service(signing_keys, monkeypatch):

@@ -46,7 +46,7 @@ The problem is the missing operational system around the model. This is what **M
 | Model files need controlled access | Private storage adapter and scoped registry API access | Code implemented; live AWS integration unverified |
 | Nobody knows which version an environment selects | Deployment selection and change history | Implemented as database state |
 | A bad update needs a recovery path | Version selection rollback; later, runtime rollback | Selection rollback implemented; runtime rollback planned |
-| Quality decisions are informal | Recorded thresholds; later, reproducible evaluations and promotion gates | Basic comparisons implemented; enforced policies planned |
+| Quality decisions are informal | Recorded thresholds; reproducible evaluations and production promotion gates | Basic comparisons and production policy gating implemented; reproducible metric execution remains planned |
 | Slow or unreliable inference goes unnoticed | Runtime health, latency, errors, drift, alerts, and costs | Planned |
 | Each team assembles disconnected tools | A web console and consistent API for lifecycle operations | Console foundation and registry implemented |
 
@@ -109,7 +109,7 @@ The database and object store are separate systems, so this cleanup is a compens
 
 Today an authorized caller creates an immutable, versioned threshold policy for a model and environment, then submits numeric metrics with a selected policy ID. The API compares the metrics to the stored rules and records a pass/fail result. For example, supplied accuracy `0.94` meets a stored minimum of `0.90`.
 
-The API does not currently calculate that accuracy, run a benchmark dataset, or establish that the supplied result is trustworthy. Dataset/evaluator provenance and immutable policy versions are recorded, but dataset checksums remain caller-declared. Remaining Phase 4 work adds reproducible metric execution and policies that gate production promotion.
+The API does not currently calculate that accuracy, run a benchmark dataset, or establish that the supplied result is trustworthy. Dataset/evaluator provenance and immutable policy versions are recorded, but dataset checksums remain caller-declared. Production version changes require current passing policy evaluations unless a caller with the separate override scope records a reason; reproducible metric execution and evaluation UI remain Phase 4 work.
 
 ### Step D — choose an environment and deploy
 
@@ -444,7 +444,7 @@ For example, ECR could store container images, an ALB could route HTTPS traffic,
 | 1 — Architecture/foundations | Configuration, lifecycle, API conventions, CI and design foundation | Responsive shell and Overview | Complete in tracker. |
 | 2 — Registry/artifacts | Version metadata, validation, storage adapters, scoped registry access | Model registration/upload/version inspection | Tasks marked implemented and locally verified; cloud integration remains unverified. |
 | 3 — Secure serving/deployments | Isolated runtimes, prediction, deployment permissions and recovery | Deployment controls and sign-in/session states | In progress; scoped prediction route, bounded transport, health check, and process-local warm-task lifecycle are implemented with mock tests; runtime image and AWS execution remain pending. |
-| 4 — Evaluation policies | Reproducible evaluation and enforced promotion eligibility | Results, comparisons, provenance and eligibility | Planned. |
+| 4 — Evaluation policies | Reproducible evaluation and enforced promotion eligibility | Results, comparisons, provenance and eligibility | Partially implemented: versioned policies and production gating exist; metric computation and evaluation UI remain planned. |
 | 5 — Observability | Logs, performance, drift, alerts, retention and cost controls | Operational monitoring views | Planned. |
 | 6 — AWS/delivery | Infrastructure, images, secrets, backups and deployment pipeline | Production frontend delivery | Planned. |
 | 7 — Release readiness | Security, load, recovery, docs and release approval evidence | Browser/accessibility/performance acceptance | Planned. |

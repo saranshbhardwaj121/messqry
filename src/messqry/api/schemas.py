@@ -77,6 +77,10 @@ class ModelDetail(ModelRead):
 class DeploymentChange(BaseModel):
     version: int = Field(gt=0)
     reason: str | None = Field(default=None, max_length=1000)
+    override_evaluation: bool = Field(
+        default=False,
+        description="Bypass production evaluation gating; requires a privileged scope and reason.",
+    )
 
 
 class DeploymentRead(BaseModel):

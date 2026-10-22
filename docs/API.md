@@ -58,6 +58,17 @@ sign-in with PKCE and attaches the access token to API calls when configured;
 live Cognito setup is unverified. Evaluation endpoints use separate read/write
 scopes, with their Cognito resource-server configuration still pending.
 
+Production deployment and rollback requests are gated by every latest
+production policy version for the model. Each policy must have a passing
+evaluation for the exact target model version, with matching policy identity
+and threshold snapshot. Missing, failing, stale, incompatible, or timestamp-tied
+latest evaluations return `409 Conflict`. An operator may set `override_evaluation: true` in the
+deployment request only when the token also has `messqry/evaluation.override`;
+the request must include a non-empty `reason`. The immutable history records
+the action as `override` and stores the trimmed reason. Keep this scope limited
+to release administrators. Cognito scope creation and grants remain Phase 6
+work.
+
 The existing `/api/v1/models/{model_id}/versions/{version_number}/evaluations`
 contract remains stable: POST accepts caller-supplied `metrics` and
 `thresholds`, and v1 responses retain their original fields. The

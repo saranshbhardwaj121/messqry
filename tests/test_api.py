@@ -1,4 +1,6 @@
+import hashlib
 import json
+from datetime import datetime, timezone
 from http import HTTPStatus
 from io import BytesIO
 from unittest.mock import patch
@@ -18,6 +20,7 @@ from messqry.api.schemas import (
     EvaluationCreateV2,
     EvaluationPolicyCreate,
     EvaluationReadV1,
+    MetricOperator,
     ModelCreate,
     ModelVersionCreate,
     PredictionRequest,
@@ -62,6 +65,37 @@ def create_model_and_versions(session_factory, name="fraud-detector"):
             for uri in ("s3://models/fraud/v1", "s3://models/fraud/v2")
         ]
         return model.id, [version.id for version in versions]
+
+
+def add_policy_evaluation(session, model_id, version_number, *, policy_version=1, passed=True):
+    model_version = session.scalar(
+        select(ModelVersion).where(
+            ModelVersion.model_id == model_id,
+            ModelVersion.version == version_number,
+        )
+    )
+    policy = EvaluationPolicy(
+        model_id=model_id,
+        name="release-quality",
+        environment="production",
+        version=policy_version,
+        thresholds={"auc": {"operator": "gte", "value": 0.9}},
+    )
+    session.add(policy)
+    session.flush()
+    evaluation = ModelEvaluation(
+        model_version_id=model_version.id,
+        policy_id=policy.id,
+        policy_name=policy.name,
+        policy_version=policy.version,
+        policy_environment=policy.environment,
+        metrics={"auc": 0.95 if passed else 0.75},
+        thresholds=policy.thresholds,
+        passed=passed,
+    )
+    session.add(evaluation)
+    session.commit()
+    return policy, evaluation
 
 
 def test_health_readiness_and_openapi_contract(session_factory):
@@ -175,8 +209,9 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
         session.add(version)
         session.commit()
         version_number = version.version
+        add_policy_evaluation(session, model_id, version_number)
         deployments.deploy_version(
-            model_id, "production", DeploymentChange(version=version_number), session
+            model_id, "staging", DeploymentChange(version=version_number), session
         )
 
         class FakeRuntime:
@@ -185,7 +220,7 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
                 self.request = kwargs
                 return PredictionResponse(
                     model_id=model_id,
-                    environment="production",
+                    environment="staging",
                     model_version=version_number,
                     predictions=[0.91],
                 )
@@ -195,7 +230,7 @@ def test_prediction_route_uses_active_validated_version_and_runtime(session_fact
         request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
         response = deployments.predict(
             model_id,
-            "production",
+            "staging",
             PredictionRequest(inputs=[{"feature": 1}]),
             request,
             session,
@@ -226,7 +261,8 @@ def test_prediction_route_integrates_with_runtime_dispatcher(session_factory):
         )
         session.add(version)
         session.commit()
-        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+        add_policy_evaluation(session, model.id, 1)
+        deployments.deploy_version(model.id, "staging", DeploymentChange(version=1), session)
 
         class FakeTimer:
             def __init__(self, *_args, **_kwargs):
@@ -264,7 +300,7 @@ def test_prediction_route_integrates_with_runtime_dispatcher(session_factory):
             observed["payload"] = payload
             return PredictionResponse(
                 model_id=model.id,
-                environment="production",
+                environment="staging",
                 model_version=1,
                 predictions=[0.98],
             )
@@ -281,7 +317,7 @@ def test_prediction_route_integrates_with_runtime_dispatcher(session_factory):
         request = Request({"type": "http", "app": app, "headers": [], "path": "/"})
         result = deployments.predict(
             model.id,
-            "production",
+            "staging",
             PredictionRequest(inputs=[{"feature": 1}]),
             request,
             session,
@@ -292,7 +328,7 @@ def test_prediction_route_integrates_with_runtime_dispatcher(session_factory):
     assert result.predictions == [0.98]
     assert observed["model_version"] == 1
     assert observed["model_id"] == str(model.id)
-    assert observed["environment"] == "production"
+    assert observed["environment"] == "staging"
     assert observed["payload"] == {"inputs": [{"feature": 1}]}
     runtime.close()
     del app.state.runtime_manager
@@ -325,7 +361,8 @@ def test_prediction_route_maps_runtime_failures_and_releases_session(
         )
         session.add(version)
         session.commit()
-        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+        add_policy_evaluation(session, model.id, 1)
+        deployments.deploy_version(model.id, "staging", DeploymentChange(version=1), session)
 
         class FailedRuntime:
             def predict(self, **_kwargs):
@@ -337,7 +374,7 @@ def test_prediction_route_maps_runtime_failures_and_releases_session(
         with pytest.raises(HTTPException) as rejected:
             deployments.predict(
                 model.id,
-                "production",
+                "staging",
                 PredictionRequest(inputs=[{"feature": 1}]),
                 request,
                 session,
@@ -361,7 +398,8 @@ def test_oversized_prediction_is_rejected_before_runtime_call(session_factory):
         )
         session.add(version)
         session.commit()
-        deployments.deploy_version(model.id, "production", DeploymentChange(version=1), session)
+        add_policy_evaluation(session, model.id, 1)
+        deployments.deploy_version(model.id, "staging", DeploymentChange(version=1), session)
 
         class RuntimeMustNotRun:
             def predict(self, **_kwargs):
@@ -372,7 +410,7 @@ def test_oversized_prediction_is_rejected_before_runtime_call(session_factory):
         with pytest.raises(HTTPException) as rejected:
             deployments.predict(
                 model.id,
-                "production",
+                "staging",
                 PredictionRequest(inputs=[{"text": "漢" * 400_000}]),
                 request,
                 session,
@@ -554,6 +592,17 @@ def test_deployment_idempotency_replays_result_and_rejects_key_reuse(session_fac
             DeploymentChange(version=1, reason="start"),
             session,
             idempotency_key="deploy-start-1",
+        )
+        legacy_fingerprint = hashlib.sha256(
+            json.dumps(
+                {"action": "deploy", "version": 1, "reason": "start"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        assert (
+            deployments._request_fingerprint("deploy", DeploymentChange(version=1, reason="start"))
+            == legacy_fingerprint
         )
         original_version = original.model_version.version
         deployments.deploy_version(
@@ -763,8 +812,26 @@ def test_evaluation_thresholds_are_stored_and_listed(session_factory):
             session,
             Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
         )
+        repeated = evaluations.record_policy_evaluation(
+            model_id,
+            1,
+            EvaluationCreateV2(
+                dataset_name="fraud-validation",
+                dataset_version="2026-10",
+                dataset_sha256="a" * 64,
+                evaluator_name="classification-metrics",
+                evaluator_version="1.2.0",
+                policy_id=policy.id,
+                metrics={"auc": 0.91, "loss": 0.12},
+            ),
+            session,
+            Principal("evaluator", "user", frozenset({"messqry/evaluation.write"})),
+        )
         assert passing.passed is True
         assert failing.passed is False
+        assert repeated.passed is passing.passed
+        assert repeated.metrics == passing.metrics
+        assert repeated.thresholds == passing.thresholds
         assert passing.dataset_name == "fraud-validation"
         assert passing.dataset_version == "2026-10"
         assert passing.dataset_sha256 == "a" * 64
@@ -784,7 +851,7 @@ def test_evaluation_thresholds_are_stored_and_listed(session_factory):
                     Principal("reader", "user", frozenset({"messqry/evaluation.read"})),
                 )
             )
-            == 2
+            == 3
         )
         assert passing.model_version_id == version_ids[0]
 
@@ -820,6 +887,159 @@ def test_evaluation_thresholds_are_stored_and_listed(session_factory):
         assert session.get(ModelVersion, version_ids[1])
 
 
+def test_production_changes_require_current_passing_policy_or_audited_override(session_factory):
+    model_id, version_ids = create_model_and_versions(session_factory)
+    deployment_writer = Principal("deployer", "user", frozenset({"messqry/deployment.write"}))
+    override_writer = Principal(
+        "release-admin",
+        "user",
+        frozenset({"messqry/deployment.write", "messqry/evaluation.override"}),
+    )
+    with session_factory() as session:
+        with pytest.raises(HTTPException) as no_policy:
+            deployments.deploy_version(
+                model_id, "production", DeploymentChange(version=1), session, deployment_writer
+            )
+        assert no_policy.value.status_code == status.HTTP_409_CONFLICT
+
+        policy, evaluation = add_policy_evaluation(session, model_id, 1)
+        deployed = deployments.deploy_version(
+            model_id, "production", DeploymentChange(version=1), session, deployment_writer
+        )
+        assert deployed.model_version.version == 1
+
+        newer_policy = EvaluationPolicy(
+            model_id=model_id,
+            name=policy.name,
+            environment="production",
+            version=2,
+            thresholds=policy.thresholds,
+        )
+        session.add(newer_policy)
+        session.commit()
+        with pytest.raises(HTTPException) as stale_policy_evaluation:
+            deployments.deploy_version(
+                model_id, "production", DeploymentChange(version=2), session, deployment_writer
+            )
+        assert stale_policy_evaluation.value.status_code == status.HTTP_409_CONFLICT
+
+        current_evaluation = ModelEvaluation(
+            model_version_id=version_ids[1],
+            policy_id=newer_policy.id,
+            policy_name=newer_policy.name,
+            policy_version=newer_policy.version,
+            policy_environment=newer_policy.environment,
+            metrics={"auc": 0.96},
+            thresholds=newer_policy.thresholds,
+            passed=True,
+        )
+        session.add(current_evaluation)
+        session.commit()
+        promoted = deployments.deploy_version(
+            model_id, "production", DeploymentChange(version=2), session, deployment_writer
+        )
+        assert promoted.model_version.version == 2
+
+        failed_rollback_evaluation = ModelEvaluation(
+            model_version_id=version_ids[0],
+            policy_id=newer_policy.id,
+            policy_name=newer_policy.name,
+            policy_version=newer_policy.version,
+            policy_environment=newer_policy.environment,
+            metrics={"auc": 0.7},
+            thresholds={"auc": {"operator": "gte", "value": 0.1}},
+            passed=False,
+        )
+        session.add(failed_rollback_evaluation)
+        session.commit()
+        assert "incompatible" in deployments._production_policy_blocker(
+            session,
+            model_id,
+            session.get(ModelVersion, version_ids[0]),
+        )
+        failed_rollback_evaluation.thresholds = newer_policy.thresholds
+        session.commit()
+        assert "did not pass" in deployments._production_policy_blocker(
+            session,
+            model_id,
+            session.get(ModelVersion, version_ids[0]),
+        )
+
+        with pytest.raises(HTTPException) as missing_rollback_evaluation:
+            deployments.rollback_deployment(
+                model_id,
+                "production",
+                DeploymentChange(version=1),
+                session,
+                deployment_writer,
+            )
+        assert missing_rollback_evaluation.value.status_code == status.HTTP_409_CONFLICT
+
+        override = DeploymentChange(
+            version=1, override_evaluation=True, reason="  incident recovery  "
+        )
+        with pytest.raises(HTTPException) as denied:
+            deployments.rollback_deployment(
+                model_id, "production", override, session, deployment_writer
+            )
+        assert denied.value.status_code == status.HTTP_403_FORBIDDEN
+        with pytest.raises(HTTPException) as no_reason:
+            deployments.rollback_deployment(
+                model_id,
+                "production",
+                DeploymentChange(version=1, override_evaluation=True),
+                session,
+                override_writer,
+            )
+        assert no_reason.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+        rolled_back = deployments.rollback_deployment(
+            model_id, "production", override, session, override_writer
+        )
+        assert rolled_back.model_version.version == 1
+        history = deployments.deployment_history(model_id, "production", session)
+        assert [event.action for event in reversed(history)] == ["deploy", "promote", "override"]
+        assert history[0].reason == "incident recovery"
+        assert evaluation.policy_id == policy.id
+
+
+def test_production_gate_rejects_tied_latest_evaluations_regardless_of_uuid_order(session_factory):
+    model_id, version_ids = create_model_and_versions(session_factory)
+    tied_timestamp = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
+    with session_factory() as session:
+        policy = EvaluationPolicy(
+            model_id=model_id,
+            name="release-quality",
+            environment="production",
+            version=1,
+            thresholds={"auc": {"operator": "gte", "value": 0.9}},
+        )
+        session.add(policy)
+        session.flush()
+        common = {
+            "model_version_id": version_ids[0],
+            "policy_id": policy.id,
+            "policy_name": policy.name,
+            "policy_version": policy.version,
+            "policy_environment": policy.environment,
+            "metrics": {"auc": 0.95},
+            "thresholds": policy.thresholds,
+            "created_at": tied_timestamp,
+        }
+        session.add_all(
+            [
+                ModelEvaluation(id=UUID(int=2), passed=True, **common),
+                ModelEvaluation(id=UUID(int=1), passed=False, **common),
+            ]
+        )
+        session.commit()
+
+        target = session.get(ModelVersion, version_ids[0])
+        assert "ambiguous latest evaluations" in deployments._production_policy_blocker(
+            session, model_id, target
+        )
+
+
 def test_evaluation_provenance_is_required_and_validated():
     base = {
         "dataset_name": "validation",
@@ -836,6 +1056,25 @@ def test_evaluation_provenance_is_required_and_validated():
         EvaluationCreateV2(**{**base, "dataset_sha256": "not-a-checksum"})
     with pytest.raises(ValueError):
         EvaluationCreateV2(**{**base, "evaluator_version": "  "})
+
+
+@pytest.mark.parametrize(
+    ("operator", "at_boundary", "above", "below"),
+    [
+        (MetricOperator.GREATER_THAN, False, True, False),
+        (MetricOperator.GREATER_THAN_OR_EQUAL, True, True, False),
+        (MetricOperator.LESS_THAN, False, False, True),
+        (MetricOperator.LESS_THAN_OR_EQUAL, True, False, True),
+    ],
+)
+def test_metric_threshold_boundaries_are_explicit_and_repeatable(
+    operator, at_boundary, above, below
+):
+    evaluate = evaluations._meets_threshold
+    assert evaluate(0.9, operator, 0.9) is at_boundary
+    assert evaluate(0.900001, operator, 0.9) is above
+    assert evaluate(0.899999, operator, 0.9) is below
+    assert evaluate(0.9, operator, 0.9) is at_boundary
 
 
 def test_v1_evaluation_payload_remains_backward_compatible(session_factory):

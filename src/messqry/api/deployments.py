@@ -26,6 +26,8 @@ from messqry.models import (
     Deployment,
     DeploymentEvent,
     DeploymentRequest,
+    EvaluationPolicy,
+    ModelEvaluation,
     ModelVersion,
     RegisteredModel,
 )
@@ -163,12 +165,85 @@ def _record_change(
     )
 
 
-def _request_fingerprint(action: str, payload: DeploymentChange) -> str:
-    canonical = json.dumps(
-        {"action": action, "version": payload.version, "reason": payload.reason},
-        sort_keys=True,
-        separators=(",", ":"),
+def _validate_override(principal: Principal, payload: DeploymentChange) -> None:
+    if not payload.override_evaluation:
+        return
+    if "messqry/evaluation.override" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The credential does not grant evaluation override permission",
+        )
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(
+            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+            detail="An evaluation override requires a non-empty audit reason",
+        )
+
+
+def _production_policy_blocker(
+    session: Session, model_id: UUID, target: ModelVersion
+) -> str | None:
+    """Return why production is blocked unless each latest policy has a current pass."""
+    policies = list(
+        session.scalars(
+            select(EvaluationPolicy)
+            .where(
+                EvaluationPolicy.model_id == model_id,
+                EvaluationPolicy.environment == "production",
+            )
+            .order_by(EvaluationPolicy.name, EvaluationPolicy.version.desc())
+        )
     )
+    current_by_name: dict[str, EvaluationPolicy] = {}
+    for policy in policies:
+        current_by_name.setdefault(policy.name, policy)
+    if not current_by_name:
+        return "No production evaluation policy is configured"
+
+    policy_ids = [policy.id for policy in current_by_name.values()]
+    evaluations = list(
+        session.scalars(
+            select(ModelEvaluation)
+            .where(
+                ModelEvaluation.model_version_id == target.id,
+                ModelEvaluation.policy_id.in_(policy_ids),
+            )
+            .order_by(ModelEvaluation.created_at.desc())
+        )
+    )
+    latest_by_policy: dict[UUID, list[ModelEvaluation]] = {}
+    for evaluation in evaluations:
+        assert evaluation.policy_id is not None
+        tied_latest = latest_by_policy.setdefault(evaluation.policy_id, [])
+        if not tied_latest or evaluation.created_at == tied_latest[0].created_at:
+            tied_latest.append(evaluation)
+
+    for name, policy in current_by_name.items():
+        tied_latest = latest_by_policy.get(policy.id, [])
+        if not tied_latest:
+            return (
+                f"Production policy '{name}' has no evaluation for model version {target.version}"
+            )
+        if len(tied_latest) > 1:
+            return f"Production policy '{name}' has ambiguous latest evaluations"
+        evaluation = tied_latest[0]
+        if (
+            evaluation.policy_name != policy.name
+            or evaluation.policy_version != policy.version
+            or evaluation.policy_environment != policy.environment
+            or evaluation.thresholds != policy.thresholds
+        ):
+            return f"Production policy '{name}' has an incompatible evaluation snapshot"
+        if not evaluation.passed:
+            return f"The latest evaluation for production policy '{name}' did not pass"
+    return None
+
+
+def _request_fingerprint(action: str, payload: DeploymentChange) -> str:
+    request_data = {"action": action, "version": payload.version, "reason": payload.reason}
+    if payload.override_evaluation:
+        request_data["override_evaluation"] = True
+    canonical = json.dumps(request_data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -276,7 +351,7 @@ def deploy_version(
 ) -> Deployment:
     """Select a registered version for an environment and record the change."""
 
-    del principal
+    _validate_override(principal, payload)
     _validate_environment(environment)
     if session.get(RegisteredModel, model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
@@ -292,6 +367,13 @@ def deploy_version(
         .with_for_update()
     )
 
+    changing_version = deployment is None or deployment.model_version_id != target.id
+    override = payload.override_evaluation
+    if environment == "production" and changing_version and not override:
+        blocker = _production_policy_blocker(session, model_id, target)
+        if blocker is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocker)
+
     try:
         if deployment is None:
             deployment = Deployment(
@@ -304,12 +386,18 @@ def deploy_version(
                     deployment_id=deployment.id,
                     from_model_version_id=None,
                     to_model_version_id=target.id,
-                    action="deploy",
-                    reason=payload.reason,
+                    action="override" if override else "deploy",
+                    reason=payload.reason.strip() if override else payload.reason,
                 )
             )
         elif deployment.model_version_id != target.id:
-            _record_change(session, deployment, target, "promote", payload.reason)
+            _record_change(
+                session,
+                deployment,
+                target,
+                "override" if override else "promote",
+                payload.reason.strip() if override else payload.reason,
+            )
         session.flush()
         _save_request_result(
             session,
@@ -345,7 +433,7 @@ def rollback_deployment(
 ) -> Deployment:
     """Move an environment back to a selected registered model version."""
 
-    del principal
+    _validate_override(principal, payload)
     _validate_environment(environment)
     fingerprint = _request_fingerprint("rollback", payload)
     replay = _replay_request(session, model_id, environment, idempotency_key, fingerprint)
@@ -361,12 +449,24 @@ def rollback_deployment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
 
     target = _get_target_version(session, model_id, payload.version)
+    changing_version = deployment.model_version_id != target.id
+    override = payload.override_evaluation
+    if environment == "production" and changing_version and not override:
+        blocker = _production_policy_blocker(session, model_id, target)
+        if blocker is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocker)
     if deployment.model_version_id == target.id and idempotency_key is None:
         # Treat replayed desired-state requests as an idempotent no-op.
         return deployment
 
     if deployment.model_version_id != target.id:
-        _record_change(session, deployment, target, "rollback", payload.reason)
+        _record_change(
+            session,
+            deployment,
+            target,
+            "override" if override else "rollback",
+            payload.reason.strip() if override else payload.reason,
+        )
     try:
         session.flush()
         _save_request_result(
